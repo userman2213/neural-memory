@@ -1,5 +1,7 @@
 # Neural Memory Adapter
 
+![Neural Memory Adapter](assets/cover.png)
+
 A brain-inspired memory system for AI agents. Stores memories as high-dimensional vectors, discovers connections autonomously via a knowledge graph, and retrieves information through associative recall and spreading activation.
 
 Built with C++23 (AVX2 SIMD) and Python. Integrates with [Hermes Agent](https://github.com/nousresearch/hermes-agent) as a memory provider.
