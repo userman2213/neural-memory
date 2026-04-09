@@ -21,17 +21,25 @@ DIMENSION = 384  # all-MiniLM-L6-v2 output dim
 # ============================================================================
 
 class SentenceTransformerBackend:
-    """Uses sentence-transformers (all-MiniLM-L6-v2, 384d, ~80MB)"""
+    """Uses sentence-transformers (all-MiniLM-L6-v2, 384d, ~80MB)
+    
+    Singleton: model loaded once and shared across all instances.
+    Cached locally at ~/.neural_memory/models/.
+    """
     MODEL_NAME = 'all-MiniLM-L6-v2'
+    _shared_model = None
+    _shared_dim = 384
     
     def __init__(self):
+        if SentenceTransformerBackend._shared_model is not None:
+            self.model = SentenceTransformerBackend._shared_model
+            self.dim = SentenceTransformerBackend._shared_dim
+            return
+        
         from sentence_transformers import SentenceTransformer
         
-        # Ensure model cache directory exists
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Check if model is already cached
-        # sentence-transformers uses: models--sentence-transformers--all-MiniLM-L6-v2
         cached_model_dir = MODEL_DIR / f"models--sentence-transformers--{self.MODEL_NAME}"
         is_first_download = not cached_model_dir.exists()
         
@@ -40,12 +48,13 @@ class SentenceTransformerBackend:
             print("This only happens once. Please wait...", flush=True)
         
         try:
-            # Load model with custom cache folder
             self.model = SentenceTransformer(
                 self.MODEL_NAME,
                 cache_folder=str(MODEL_DIR)
             )
             self.dim = 384
+            SentenceTransformerBackend._shared_model = self.model
+            SentenceTransformerBackend._shared_dim = self.dim
             
             if is_first_download:
                 print(f"Model downloaded and cached successfully!", flush=True)

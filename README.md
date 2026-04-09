@@ -32,24 +32,56 @@ Built with C++23 (AVX2 SIMD) and Python. Integrates with [Hermes Agent](https://
 
 Modern Hopfield Networks are mathematically equivalent to Transformer attention (Ramsauer et al., 2020). This means the core memory mechanism can be implemented as a simple attention layer — no exotic hardware needed.
 
-## Quick Start
+## Installation
+
+### Automatic (recommended)
 
 ```bash
-# Build C++ library
 cd ~/projects/neural-memory-adapter
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j$(nproc)
+bash install.sh
+```
 
-# Python (standalone)
+The script will:
+1. Install Python dependencies (sentence-transformers, numpy)
+2. Build C++ library (optional, if cmake/g++ available)
+3. Copy plugin to `~/.hermes/hermes-agent/plugins/memory/neural/`
+4. Update `~/.hermes/config.yaml` to use `provider: neural`
+
+### Manual
+
+```bash
+# 1. Install dependencies
 pip install sentence-transformers numpy
-cd python
-python3 demo.py
 
-# Hermes Agent integration
-# Set in ~/.hermes/config.yaml:
+# 2. Copy plugin files
+cp python/memory_client.py ~/.hermes/hermes-agent/plugins/memory/neural/
+cp python/embed_provider.py ~/.hermes/hermes-agent/plugins/memory/neural/
+
+# 3. Edit config
+# In ~/.hermes/config.yaml, set:
 #   memory:
 #     provider: neural
+#     neural:
+#       db_path: ~/.neural_memory/hermes.db
+#       embedding_backend: auto
+
+# 4. Restart Hermes
+hermes
+```
+
+### Uninstall
+
+```bash
+# Restore previous provider in config
+# Edit ~/.hermes/config.yaml:
+#   memory:
+#     provider: mempalace  # or your previous provider
+
+# Remove plugin (optional)
+rm -rf ~/.hermes/hermes-agent/plugins/memory/neural/
+
+# Remove data (optional)
+rm -rf ~/.neural_memory/
 ```
 
 ## Python API

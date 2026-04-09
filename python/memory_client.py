@@ -8,6 +8,8 @@ import os
 import ctypes
 import json
 import sqlite3
+import struct
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -90,18 +92,21 @@ class SQLiteStore:
     def __init__(self, db_path: str | Path = DB_PATH):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self.conn.execute("PRAGMA journal_mode=WAL")  # Better concurrent read perf
+        self.conn.execute("PRAGMA synchronous=NORMAL") # Faster writes
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._lock = threading.Lock()
     
     def store(self, label: str, content: str, embedding: list[float]) -> int:
-        import struct
         blob = struct.pack(f'{len(embedding)}f', *embedding)
-        cur = self.conn.execute(
-            "INSERT INTO memories (label, content, embedding) VALUES (?, ?, ?)",
-            (label, content, blob)
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO memories (label, content, embedding) VALUES (?, ?, ?)",
+                (label, content, blob)
+            )
+            self.conn.commit()
+            return cur.lastrowid
     
     def get_all(self) -> list[dict]:
         import struct
@@ -138,18 +143,20 @@ class SQLiteStore:
         }
     
     def touch(self, id_: int):
-        self.conn.execute(
-            "UPDATE memories SET last_accessed = unixepoch(), access_count = access_count + 1 WHERE id = ?",
-            (id_,)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE memories SET last_accessed = unixepoch(), access_count = access_count + 1 WHERE id = ?",
+                (id_,)
+            )
+            self.conn.commit()
     
     def add_connection(self, source: int, target: int, weight: float, edge_type: str = "similar"):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO connections (source_id, target_id, weight, edge_type) VALUES (?, ?, ?, ?)",
-            (source, target, weight, edge_type)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO connections (source_id, target_id, weight, edge_type) VALUES (?, ?, ?, ?)",
+                (source, target, weight, edge_type)
+            )
+            self.conn.commit()
     
     def get_connections(self, node_id: int) -> list[dict]:
         rows = self.conn.execute(
