@@ -4,9 +4,7 @@ memory_client.py - Python client for Neural Memory Adapter
 Wraps the C++ library via ctypes. Uses embed_provider for text->vector.
 """
 
-import os
 import ctypes
-import json
 import sqlite3
 import struct
 import threading

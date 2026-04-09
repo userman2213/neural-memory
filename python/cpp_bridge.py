@@ -6,7 +6,6 @@ Provides Pythonic interface to libneural_memory.so
 
 import ctypes
 import ctypes.util
-import os
 from pathlib import Path
 from typing import Optional
 

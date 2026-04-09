@@ -4,7 +4,7 @@
 
 ```bash
 # Clone
-git clone https://github.com/nousresearch/neural-memory-adapter.git
+git clone https://github.com/itsXactlY/neural-memory-adapter.git
 cd neural-memory-adapter
 
 # Install dev dependencies
@@ -36,7 +36,7 @@ neural-memory-adapter/
 
 ### Reporting Bugs
 
-1. Check existing [issues](https://github.com/nousresearch/neural-memory-adapter/issues)
+1. Check existing [issues](https://github.com/itsXactlY/neural-memory-adapter/issues)
 2. Create a new issue with:
    - OS + Python version
    - Steps to reproduce
@@ -188,8 +188,8 @@ Modern Hopfield Networks are mathematically equivalent to Transformer attention 
 
 ## Getting Help
 
-- **Issues**: [GitHub Issues](https://github.com/nousresearch/neural-memory-adapter/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/nousresearch/neural-memory-adapter/discussions)
+- **Issues**: [GitHub Issues](https://github.com/itsXactlY/neural-memory-adapter/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/itsXactlY/neural-memory-adapter/discussions)
 - **Discord**: #neural-memory in Hermes Discord
 
 ## License
