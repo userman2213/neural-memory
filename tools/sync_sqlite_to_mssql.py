@@ -111,10 +111,7 @@ def sync_memories(sqlite_db, mssql_conn, incremental=False):
     mc.execute("SET IDENTITY_INSERT memories OFF")
     mssql_conn.commit()
 
-    if not incremental:
-        mc.execute("ALTER TABLE connections WITH CHECK CHECK CONSTRAINT ALL")
-        mssql_conn.commit()
-
+    # FK re-enable deferred to after connections are also synced
     return synced, errors
 
 
@@ -243,6 +240,20 @@ def main():
         print(f"  Done: {cs} synced, {ce} errors ({time.time()-t1:.1f}s)")
     else:
         print("[3/3] Skipped connections")
+
+    # Clean orphans and re-enable FK constraints
+    mc = mconn.cursor()
+    mc.execute("ALTER TABLE connections NOCHECK CONSTRAINT ALL")
+    mc.execute("""
+        DELETE FROM connections
+        WHERE source_id NOT IN (SELECT id FROM memories)
+           OR target_id NOT IN (SELECT id FROM memories)
+    """)
+    orphans = mc.rowcount
+    if orphans:
+        print(f"  Cleaned {orphans} orphaned connections")
+    mc.execute("ALTER TABLE connections WITH CHECK CHECK CONSTRAINT ALL")
+    mconn.commit()
 
     verify(args.db, mconn)
     mconn.close()
