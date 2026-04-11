@@ -153,7 +153,33 @@ multiple agents can dream independently on the same knowledge graph.
 
 Falls back to SQLite if MSSQL is unavailable.
 
-### Pitfalls (learned the hard way)
+### MSSQL Pitfall: MIN()/MAX() Are Aggregates
+
+MSSQL rejects `MIN(weight + 0.05, 1.0)` — MIN/MAX are aggregate functions.
+Use CASE WHEN instead:
+```sql
+UPDATE connections SET weight = CASE
+  WHEN weight + 0.05 > 1.0 THEN 1.0 ELSE weight + 0.05 END
+```
+
+### Credentials
+
+Never hardcode. Resolution: env vars → ~/.hermes/.env → config → defaults.
+```bash
+# ~/.hermes/.env
+MSSQL_SERVER=localhost
+MSSQL_DATABASE=NeuralMemory
+MSSQL_USERNAME=SA
+MSSQL_PASSWORD=your_password
+```
+
+### Pitfalls
+
+- **MSSQL `MIN()/MAX()` are aggregate, not scalar** — Use `CASE WHEN weight + 0.05 > 1.0 THEN 1.0 ELSE weight + 0.05 END` instead of `MIN(weight + 0.05, 1.0)`. SQLite has scalar MIN/MAX, MSSQL does not.
+- **Thread safety in SQLiteStore.get_all()** — Must use `self._lock` in `get_all()` not just `store()`. Concurrent reads during writes return None blobs causing `TypeError: object of type 'NoneType' has no len()`.
+- **`_initial_context` consumed by prefetch()** — Don't clear `_initial_context` in `prefetch()`. Keep it available for both `system_prompt_block()` and `prefetch()` user message injection. Double-injection (system prompt + user message) is intentional.
+- **C++ build fails without ODBC** — Add `#ifdef USE_MSSQL` guards in headers/source. CMakeLists.txt needs `option(USE_MSSQL ...)` with conditional source list and link flags.
+- **Credentials: .env not hardcoded** — `_env('MSSQL_PASSWORD')` with fallback chain: OS env > .env > config.yaml > defaults. (learned the hard way)
 
 **MSSQL has no scalar MIN/MAX** — `MIN(col + 0.05, 1.0)` is an AGGREGATE in MSSQL,
 not scalar like SQLite. Use CASE WHEN instead:
@@ -250,4 +276,168 @@ In production with sentence-transformers, conflict detection works correctly.
 # Every 6 hours
 cronjob create --name neural-dream-mssql --schedule "0 */6 * * *" \
   --prompt "Run: python ~/plugins/memory/neural/dream_worker.py"
+```
+
+## C++ SIMD Bridge (recall <1ms)
+
+The C++ bridge (`cpp_bridge.py` → `libneural_memory.so`) provides SIMD-accelerated
+retrieval. Wire it into NeuralMemory with `use_cpp=True`:
+
+```python
+m = NeuralMemory(db_path=DB, use_cpp=True)
+# C++ index loaded at init from all stored memories
+# recall() uses C++ retrieve(k*3) then applies temporal scoring on small set
+```
+
+### CSearchResult Struct MUST Match C Header
+
+The Python `ctypes.Structure` MUST exactly match `NeuralMemoryResult` in `c_api.h`:
+
+```c
+// c_api.h
+typedef struct {
+    uint64_t id;
+    float*   embedding;      // 8 bytes on 64-bit
+    int      embedding_dim;  // 4 bytes
+    char     label[256];
+    char     content[4096];  // NOT 1024!
+    float    similarity;
+    float    salience;
+} NeuralMemoryResult;
+```
+
+```python
+# cpp_bridge.py — MUST match exactly or segfault
+class CSearchResult(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_uint64),
+        ("embedding", ctypes.POINTER(ctypes.c_float)),
+        ("embedding_dim", ctypes.c_int),
+        ("label", ctypes.c_char * 256),
+        ("content", ctypes.c_char * 4096),   # was 1024 — WRONG, caused buffer overflow
+        ("similarity", ctypes.c_float),
+        ("salience", ctypes.c_float),
+    ]
+```
+
+Field name change: C struct uses `similarity` not `score`. Update Python access accordingly.
+
+## Cython fast_ops (66x cosine_similarity)
+
+```python
+# fast_ops.pyx — compiled with: python setup_fast.py build_ext --inplace
+from fast_ops import cosine_similarity, batch_cosine_similarity
+
+# 0.8us/call vs 53us Python = 66x faster
+# batch_cosine_similarity(query, matrix): 0.4ms for 918x384 vectors
+```
+
+Drop-in integration in `memory_client.py`:
+```python
+class NeuralMemory:
+    try:
+        from fast_ops import cosine_similarity as _cosine_sim_fast
+    except ImportError:
+        _cosine_sim_fast = None
+
+    @staticmethod
+    def _cosine_similarity(a, b):
+        if NeuralMemory._cosine_sim_fast is not None:
+            import numpy as np
+            if not isinstance(a, np.ndarray):
+                a = np.asarray(a, dtype=np.float64)
+            if not isinstance(b, np.ndarray):
+                b = np.asarray(b, dtype=np.float64)
+            return float(NeuralMemory._cosine_sim_fast(a, b))
+        # Python fallback
+        dot = sum(x*y for x, y in zip(a, b))
+        ...
+```
+
+Avoid repeated `np.asarray()` calls by storing embeddings as numpy arrays in the graph.
+
+## MSSQL IPv4 vs IPv6 Pitfall
+
+On Arch Linux (and some Ubuntu configs), `localhost` resolves to `::1` (IPv6) first.
+MSSQL listens on `127.0.0.1` (IPv4) only → login timeout.
+
+**Fix:** Use `127.0.0.1` instead of `localhost` in all defaults:
+```python
+server = server or _env('MSSQL_SERVER', '127.0.0.1')  # NOT 'localhost'
+```
+
+And in `.env`:
+```
+MSSQL_SERVER=127.0.0.1
+```
+
+This cost ~30min of debugging. The error message "Login timeout expired" is misleading —
+it's a connection issue, not an auth issue.
+
+## Gemma-4 Reasoning Model (llama-server)
+
+Gemma-4 via llama-server uses "thinking" mode by default. All output goes to
+`reasoning_content`, `content` stays empty. Benchmark gets 0% accuracy.
+
+**Fix:** Set `reasoning_budget: -1` in API call to force content output:
+```python
+resp = client.chat.completions.create(
+    model="GPT",
+    messages=[...],
+    extra_body={"reasoning_budget": -1}  # forces content alongside reasoning
+)
+```
+
+Without this: 55% → 100% tokens spent on CoT, 0% on content.
+With this: reasoning capped, content produced → proper benchmark results.
+
+Server-side: `--reasoning-budget 512` caps at 512 tokens CoT.
+Client-side: `reasoning_budget: -1` further forces content output.
+
+## Full Stack Benchmark Harness
+
+`benchmarks/bench_neural.py` uses the complete NeuralMemory stack:
+
+```bash
+python bench_neural.py --dataset mmlu_pro --mssql    # MSSQL + C++ + Cython
+python bench_neural.py --dataset mmlu_pro             # SQLite + C++ + Cython
+python bench_neural.py --dataset mmlu_pro --no-memory  # Baseline
+python bench_neural.py --all --mssql                   # All datasets
+```
+
+Stack: NeuralMemory(use_mssql=True, use_cpp=True, embedding_backend="sentence-transformers")
+- sentence-transformers CUDA for embeddings
+- C++ SIMD bridge for recall (<1ms)
+- Cython fast_ops for cosine_similarity (66x)
+- llama-server (Gemma-4) as LLM judge (temp=0.0, seed=42)
+
+## Initial Context Double-Injection
+
+`_initial_context` must NOT be consumed by `prefetch()`. Keep it available for both:
+1. `system_prompt_block()` — system prompt injection
+2. `prefetch()` — user message injection (build_memory_context_block)
+
+```python
+def prefetch(self, query, **kwargs):
+    if not result and self._initial_context:
+        # DON'T consume: self._initial_context = ""
+        return f"## Neural Memory Context\n{self._initial_context}"
+```
+
+Double-injection is intentional — model sees context in both places.
+
+## SQLite Never Bench, MSSQL as Primary
+
+SQLiteStore stays as fallback but benchmarks and production should prefer MSSQL:
+- MSSQL is shared with Dream Engine (consolidation happens on same DB)
+- C++ index loads from whatever store is configured
+- Dream cron consolidates MSSQL overnight, C++ index rebuilds on next start
+
+Architecture:
+```
+MSSQL (persist) ←→ Dream Engine (overnight consolidation)
+       ↓
+C++ SIMD Index (RAM) ←→ recall() <1ms
+       ↓
+SQLite (fallback, never bench)
 ```
