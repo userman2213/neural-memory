@@ -1,7 +1,7 @@
 """Configuration for Neural Memory plugin.
 
 Defaults:
-  DB path:               ~/.neural_memory/hermes.db
+  DB path:               ~/.neural_memory/memory.db
   Embedding backend:     auto (sentence-transformers > tfidf > hash)
   Consolidation interval: 300s
   Max episodic memories:  50000
@@ -17,10 +17,10 @@ from typing import Any, Dict
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_DB_PATH = str(Path.home() / ".neural_memory" / "hermes.db")
+DEFAULT_DB_PATH = str(Path.home() / ".neural_memory" / "memory.db")
 DEFAULT_EMBEDDING_BACKEND = "auto"          # auto | sentence-transformers | tfidf | hash
-DEFAULT_CONSOLIDATION_INTERVAL = 300        # seconds
-DEFAULT_MAX_EPISODIC = 50000
+DEFAULT_CONSOLIDATION_INTERVAL = 0          # 0 = disabled
+DEFAULT_MAX_EPISODIC = 0                    # 0 = unlimited
 DEFAULT_SIMILARITY_THRESHOLD = 0.15         # auto-connect threshold
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_PREFETCH_LIMIT = 5

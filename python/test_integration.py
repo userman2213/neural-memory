@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """test_integration.py - Fast integration tests (no sentence-transformers)"""
-import sys, os, tempfile, math
+import sys, os, tempfile
 from pathlib import Path
 
 PASS = FAIL = 0
 
-def test(name):
+def _testcase(name):
     def d(fn):
         global PASS, FAIL
         try: fn(); print(f"  PASS: {name}"); PASS += 1
@@ -19,7 +19,7 @@ def cosine(a, b):
     return dot/(na*nb) if na*nb > 1e-10 else 0
 
 # Hash backend only (no ST import)
-@test("Hash embed - basic")
+@_testcase("Hash embed - basic")
 def t1():
     sys.path.insert(0, str(Path(__file__).parent))
     # Inline hash embedding
@@ -33,7 +33,7 @@ def t1():
     n = sum(v*v for v in vec)**0.5
     assert n > 0
 
-@test("SQLite - store/get")
+@_testcase("SQLite - store/get")
 def t2():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -47,7 +47,7 @@ def t2():
         s.close()
     finally: os.unlink(db)
 
-@test("SQLite - connections")
+@_testcase("SQLite - connections")
 def t3():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -61,7 +61,7 @@ def t3():
         s.close()
     finally: os.unlink(db)
 
-@test("Memory - store/recall (hash)")
+@_testcase("Memory - store/recall (hash)")
 def t4():
     sys.path.insert(0, str(Path(__file__).parent))
     from memory_client import NeuralMemory
@@ -75,7 +75,7 @@ def t4():
         m.close()
     finally: os.unlink(db)
 
-@test("Memory - connections auto")
+@_testcase("Memory - connections auto")
 def t5():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -89,7 +89,7 @@ def t5():
         m.close()
     finally: os.unlink(db)
 
-@test("Memory - spreading activation")
+@_testcase("Memory - spreading activation")
 def t6():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -102,7 +102,7 @@ def t6():
         m.close()
     finally: os.unlink(db)
 
-@test("Memory - persistence")
+@_testcase("Memory - persistence")
 def t7():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -116,7 +116,7 @@ def t7():
         m2.close()
     finally: os.unlink(db)
 
-@test("Memory API - unified")
+@_testcase("Memory API - unified")
 def t8():
     from neural_memory import Memory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -127,12 +127,12 @@ def t8():
             assert len(r) >= 1
     finally: os.unlink(db)
 
-@test("Hermes plugin installed")
+@_testcase("Hermes plugin installed")
 def t9():
     p = Path.home() / ".hermes/hermes-agent/plugins/memory/neural/__init__.py"
     assert p.exists(), f"Missing: {p}"
 
-@test("C++ library symbols")
+@_testcase("C++ library symbols")
 def t10():
     import subprocess
     lib = os.path.expanduser("~/projects/neural-memory-adapter/build/libneural_memory.so")

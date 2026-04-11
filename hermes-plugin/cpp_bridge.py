@@ -14,9 +14,10 @@ from typing import Optional
 # ============================================================================
 
 def _find_lib() -> str:
+    _plugin_dir = Path(__file__).parent
     candidates = [
-        Path(__file__).parent.parent / "build" / "libneural_memory.so",
         Path.home() / "projects" / "neural-memory-adapter" / "build" / "libneural_memory.so",
+        _plugin_dir / "build" / "libneural_memory.so",
         Path("/usr/local/lib/libneural_memory.so"),
         Path("/usr/lib/libneural_memory.so"),
     ]
@@ -29,7 +30,7 @@ def _find_lib() -> str:
         return lib
     raise FileNotFoundError(
         "libneural_memory.so not found. Build first:\n"
-        "  cd ~/projects/neural-memory-adapter/build && cmake --build . -j$(nproc)"
+        "  cd ~/neural-memory-adapter/build && cmake --build . -j$(nproc)"
     )
 
 # ============================================================================
@@ -291,4 +292,4 @@ if __name__ == "__main__":
         print("\nC++ bridge: OK")
     except FileNotFoundError as e:
         print(f"C++ library not found: {e}")
-        print("Build first: cd ~/projects/neural-memory-adapter/build && cmake --build . -j$(nproc)")
+        print("Build first: cd ~/neural-memory-adapter/build && cmake --build . -j$(nproc)")

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 PASS = FAIL = SKIP = 0
 TAGS = set()
 
-def test(name, tags=None):
+def _testcase(name, tags=None):
     tags = tags or []
     def decorator(fn):
         def wrapper():
@@ -51,7 +51,7 @@ def cosine(a, b):
 # Embed Provider Tests
 # ============================================================================
 
-@test("hash_embed: basic vector creation", tags=["embed"])
+@_testcase("hash_embed: basic vector creation", tags=["embed"])
 def test_1():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -59,14 +59,14 @@ def test_1():
     assert len(v) == 384
     assert any(x != 0 for x in v), "Vector should not be all zeros"
 
-@test("hash_embed: deterministic output", tags=["embed"])
+@_testcase("hash_embed: deterministic output", tags=["embed"])
 def test_2():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
     assert b.embed("test") == b.embed("test")
     assert b.embed("a") != b.embed("b")
 
-@test("hash_embed: similarity ordering", tags=["embed"])
+@_testcase("hash_embed: similarity ordering", tags=["embed"])
 def test_3():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -75,7 +75,7 @@ def test_3():
     v3 = b.embed("quantum computing research paper")
     assert cosine(v1, v2) > cosine(v1, v3), "dog-dog > dog-quantum"
 
-@test("hash_embed: batch consistency", tags=["embed"])
+@_testcase("hash_embed: batch consistency", tags=["embed"])
 def test_4():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -83,14 +83,14 @@ def test_4():
     assert len(batch) == 3
     assert batch[0] == b.embed("a")
 
-@test("hash_embed: empty string", tags=["embed"])
+@_testcase("hash_embed: empty string", tags=["embed"])
 def test_5():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
     v = b.embed("")
     assert len(v) == 384
 
-@test("hash_embed: unicode handling", tags=["embed"])
+@_testcase("hash_embed: unicode handling", tags=["embed"])
 def test_21():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -98,7 +98,7 @@ def test_21():
     v = b.embed("Äöüß 中文")
     assert len(v) == 384
 
-@test("hash_embed: dimension variants", tags=["embed"])
+@_testcase("hash_embed: dimension variants", tags=["embed"])
 def test_7():
     from embed_provider import HashBackend
     for dim in [64, 128, 256, 384, 512, 768]:
@@ -106,7 +106,7 @@ def test_7():
         v = b.embed("test")
         assert len(v) == dim
 
-@test("hash_embed: normalization", tags=["embed"])
+@_testcase("hash_embed: normalization", tags=["embed"])
 def test_8():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -114,7 +114,7 @@ def test_8():
     norm = sum(x*x for x in v)**0.5
     assert abs(norm - 1.0) < 0.01, f"Norm should be ~1.0, got {norm}"
 
-@test("tfidf: auto-train on corpus", tags=["embed"])
+@_testcase("tfidf: auto-train on corpus", tags=["embed"])
 def test_9():
     from embed_provider import TfidfSvdBackend
     b = TfidfSvdBackend(dim=128)
@@ -123,7 +123,7 @@ def test_9():
         b.embed(text)
     assert b._trained, "Should auto-train after 5 texts"
 
-@test("tfidf: trained embeddings are valid", tags=["embed"])
+@_testcase("tfidf: trained embeddings are valid", tags=["embed"])
 def test_10():
     from embed_provider import TfidfSvdBackend
     b = TfidfSvdBackend(dim=128)
@@ -134,7 +134,7 @@ def test_10():
     v = b.embed("test embedding after training")
     assert len(v) == 128, f"Expected 128, got {len(v)}"
 
-@test("sentence_transformers: singleton", tags=["embed", "slow"])
+@_testcase("sentence_transformers: singleton", tags=["embed", "slow"])
 def test_11():
     try:
         from embed_provider import SentenceTransformerBackend
@@ -148,7 +148,7 @@ def test_11():
     assert b1.model is b2.model, "Should share same model"
     assert (t2-t1) < 0.1, f"Second init should be instant, got {t2-t1:.3f}s"
 
-@test("auto_detect: picks best backend", tags=["embed"])
+@_testcase("auto_detect: picks best backend", tags=["embed"])
 def test_12():
     from embed_provider import EmbeddingProvider
     p = EmbeddingProvider(backend="auto")
@@ -160,7 +160,7 @@ def test_12():
 # SQLite Store Tests
 # ============================================================================
 
-@test("sqlite: create and read", tags=["storage"])
+@_testcase("sqlite: create and read", tags=["storage"])
 def test_13():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -174,7 +174,7 @@ def test_13():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: get_all", tags=["storage"])
+@_testcase("sqlite: get_all", tags=["storage"])
 def test_14():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -187,7 +187,7 @@ def test_14():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: connections", tags=["storage"])
+@_testcase("sqlite: connections", tags=["storage"])
 def test_15():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -202,7 +202,7 @@ def test_15():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: touch updates access", tags=["storage"])
+@_testcase("sqlite: touch updates access", tags=["storage"])
 def test_16():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -217,7 +217,7 @@ def test_16():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: stats", tags=["storage"])
+@_testcase("sqlite: stats", tags=["storage"])
 def test_17():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -232,7 +232,7 @@ def test_17():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: thread safety (8 threads)", tags=["storage", "threading"])
+@_testcase("sqlite: thread safety (8 threads)", tags=["storage", "threading"])
 def test_18():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -257,7 +257,7 @@ def test_18():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: WAL mode enabled", tags=["storage"])
+@_testcase("sqlite: WAL mode enabled", tags=["storage"])
 def test_19():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -268,7 +268,7 @@ def test_19():
         s.close()
     finally: os.unlink(db)
 
-@test("sqlite: persistence across reopen", tags=["storage"])
+@_testcase("sqlite: persistence across reopen", tags=["storage"])
 def test_20():
     from memory_client import SQLiteStore
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -286,7 +286,7 @@ def test_20():
 # Memory Client Tests
 # ============================================================================
 
-@test("memory: store and recall", tags=["memory"])
+@_testcase("memory: store and recall", tags=["memory"])
 def test_21():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -300,7 +300,7 @@ def test_21():
         m.close()
     finally: os.unlink(db)
 
-@test("memory: auto-connections", tags=["memory"])
+@_testcase("memory: auto-connections", tags=["memory"])
 def test_22():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -314,7 +314,7 @@ def test_22():
         m.close()
     finally: os.unlink(db)
 
-@test("memory: spreading activation", tags=["memory", "graph"])
+@_testcase("memory: spreading activation", tags=["memory", "graph"])
 def test_23():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -327,7 +327,7 @@ def test_23():
         m.close()
     finally: os.unlink(db)
 
-@test("memory: persistence", tags=["memory"])
+@_testcase("memory: persistence", tags=["memory"])
 def test_24():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -341,7 +341,7 @@ def test_24():
         m2.close()
     finally: os.unlink(db)
 
-@test("memory: context manager", tags=["memory"])
+@_testcase("memory: context manager", tags=["memory"])
 def test_25():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -351,7 +351,7 @@ def test_25():
             assert len(m.recall("test", k=1)) >= 1
     finally: os.unlink(db)
 
-@test("memory: large batch (100 memories)", tags=["memory", "stress"])
+@_testcase("memory: large batch (100 memories)", tags=["memory", "stress"])
 def test_26():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -369,7 +369,7 @@ def test_26():
 # Unified API Tests
 # ============================================================================
 
-@test("unified: basic workflow", tags=["api"])
+@_testcase("unified: basic workflow", tags=["api"])
 def test_27():
     from neural_memory import Memory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -380,7 +380,7 @@ def test_27():
             assert len(r) >= 1
     finally: os.unlink(db)
 
-@test("unified: stats", tags=["api"])
+@_testcase("unified: stats", tags=["api"])
 def test_28():
     from neural_memory import Memory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -397,7 +397,7 @@ def test_28():
 # C++ Bridge Tests
 # ============================================================================
 
-@test("cpp: library symbols exist", tags=["cpp"])
+@_testcase("cpp: library symbols exist", tags=["cpp"])
 def test_29():
     import subprocess
     lib = os.path.expanduser("~/projects/neural-memory-adapter/build/libneural_memory.so")
@@ -407,7 +407,7 @@ def test_29():
     for sym in ["neural_memory_create", "neural_memory_store", "neural_memory_retrieve_full"]:
         assert sym in r.stdout, f"Missing symbol: {sym}"
 
-@test("cpp: bridge loads", tags=["cpp"])
+@_testcase("cpp: bridge loads", tags=["cpp"])
 def test_30():
     try:
         from cpp_bridge import NeuralMemoryCpp
@@ -420,14 +420,14 @@ def test_30():
 # Hermes Plugin Tests
 # ============================================================================
 
-@test("hermes: plugin files exist", tags=["hermes"])
+@_testcase("hermes: plugin files exist", tags=["hermes"])
 def test_31():
     plugin = Path.home() / ".hermes/hermes-agent/plugins/memory/neural"
     assert (plugin / "__init__.py").exists()
     assert (plugin / "config.py").exists()
     assert (plugin / "plugin.yaml").exists()
 
-@test("hermes: plugin loads", tags=["hermes"])
+@_testcase("hermes: plugin loads", tags=["hermes"])
 def test_32():
     sys.path.insert(0, str(Path.home() / "projects/neural-memory-adapter/python"))
     sys.path.insert(0, str(Path.home() / ".hermes/hermes-agent"))
@@ -435,7 +435,7 @@ def test_32():
     p = NeuralMemoryProvider()
     assert p.name == "neural"
 
-@test("hermes: tool schemas", tags=["hermes"])
+@_testcase("hermes: tool schemas", tags=["hermes"])
 def test_33():
     sys.path.insert(0, str(Path.home() / "projects/neural-memory-adapter/python"))
     sys.path.insert(0, str(Path.home() / ".hermes/hermes-agent"))
@@ -446,7 +446,7 @@ def test_33():
     assert "neural_think" in names
     assert "neural_graph" in names
 
-@test("hermes: config loads", tags=["hermes"])
+@_testcase("hermes: config loads", tags=["hermes"])
 def test_34():
     sys.path.insert(0, str(Path.home() / "projects/neural-memory-adapter/python"))
     sys.path.insert(0, str(Path.home() / ".hermes/hermes-agent"))
@@ -459,7 +459,7 @@ def test_34():
 # Performance Tests
 # ============================================================================
 
-@test("perf: embed 100 texts < 1s (hash)", tags=["perf"])
+@_testcase("perf: embed 100 texts < 1s (hash)", tags=["perf"])
 def test_35():
     from embed_provider import HashBackend
     b = HashBackend(dim=384)
@@ -469,7 +469,7 @@ def test_35():
     dt = time.time() - t0
     assert dt < 1.0, f"Too slow: {dt:.2f}s for 100 embeds"
 
-@test("perf: store 100 memories < 2s", tags=["perf"])
+@_testcase("perf: store 100 memories < 2s", tags=["perf"])
 def test_36():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
@@ -483,7 +483,7 @@ def test_36():
         m.close()
     finally: os.unlink(db)
 
-@test("perf: recall top-5 from 100 < 0.5s", tags=["perf"])
+@_testcase("perf: recall top-5 from 100 < 0.5s", tags=["perf"])
 def test_37():
     from memory_client import NeuralMemory
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f: db = f.name
