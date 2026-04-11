@@ -1,10 +1,49 @@
 #!/usr/bin/env python3
 """
 mssql_store.py - MSSQL storage backend for Neural Memory
-Uses pyodbc with creds from dontcommit.py
+Uses pyodbc with credentials from env vars or .env file.
+
+Credentials resolution order:
+  1. Environment variables: MSSQL_SERVER, MSSQL_DATABASE, MSSQL_USERNAME, MSSQL_PASSWORD
+  2. .env file (~/.hermes/.env, CWD, plugin dir)
+  3. Defaults (localhost, NeuralMemory, SA)
 """
+import os
 import struct
+from pathlib import Path
 from typing import Optional
+
+
+def _load_dotenv(paths: list[str]) -> dict:
+    env = {}
+    for p in paths:
+        path = Path(p).expanduser()
+        if path.is_file():
+            try:
+                for line in path.read_text().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, _, val = line.partition("=")
+                        key = key.strip()
+                        val = val.strip().strip("\"'")
+                        if key and val:
+                            env.setdefault(key, val)
+            except Exception:
+                pass
+    return env
+
+
+_dotenv = _load_dotenv([
+    ".env",
+    str(Path.home() / ".hermes" / ".env"),
+    str(Path(__file__).parent / ".env"),
+])
+
+
+def _env(key: str, fallback: str = "") -> str:
+    return os.environ.get(key) or _dotenv.get(key, fallback)
 
 SCHEMA_SQL = """
 IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'NeuralMemory')
@@ -48,12 +87,27 @@ CREATE INDEX idx_conn_target ON connections(target_id);
 
 
 class MSSQLStore:
-    """MSSQL-backed memory store"""
-    
-    def __init__(self, server='localhost', database='NeuralMemory',
-                 username='SA', password="q?}33YIToo:H%xue$Kr*",
-                 driver='{ODBC Driver 18 for SQL Server}'):
+    """MSSQL-backed memory store.
+
+    Credentials: env vars > .env > defaults.
+    """
+
+    def __init__(self, server='', database='', username='', password='',
+                 driver=''):
         import pyodbc
+
+        server = server or _env('MSSQL_SERVER', 'localhost')
+        database = database or _env('MSSQL_DATABASE', 'NeuralMemory')
+        username = username or _env('MSSQL_USERNAME', 'SA')
+        password = password or _env('MSSQL_PASSWORD', '')
+        driver = driver or _env('MSSQL_DRIVER', '{ODBC Driver 18 for SQL Server}')
+
+        if not password:
+            import logging
+            logging.getLogger(__name__).warning(
+                "MSSQL_PASSWORD not set — add it to ~/.hermes/.env"
+            )
+
         self.conn_str = (
             f'DRIVER={driver};'
             f'SERVER={server};'
