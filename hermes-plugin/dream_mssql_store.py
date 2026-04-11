@@ -120,7 +120,7 @@ class DreamMSSQLStore:
             raise ImportError("pyodbc required for MSSQL dream backend")
 
         # Resolve: explicit args > env vars > defaults
-        server = server or _env('MSSQL_SERVER', 'localhost')
+        server = server or _env('MSSQL_SERVER', '127.0.0.1')
         database = database or _env('MSSQL_DATABASE', 'NeuralMemory')
         username = username or _env('MSSQL_USERNAME', 'SA')
         password = password or _env('MSSQL_PASSWORD', '')
