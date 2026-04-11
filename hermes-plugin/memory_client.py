@@ -597,12 +597,26 @@ class NeuralMemory:
             self._cpp = None
         self.store.close()
     
+    # Cython-accelerated ops (falls back to Python if unavailable)
+    try:
+        from fast_ops import cosine_similarity as _cosine_sim_fast
+    except ImportError:
+        _cosine_sim_fast = None
+
     @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    def _cosine_similarity(a, b) -> float:
+        if NeuralMemory._cosine_sim_fast is not None:
+            import numpy as np
+            # Avoid repeated array creation for lists
+            if not isinstance(a, np.ndarray):
+                a = np.asarray(a, dtype=np.float64)
+            if not isinstance(b, np.ndarray):
+                b = np.asarray(b, dtype=np.float64)
+            return float(NeuralMemory._cosine_sim_fast(a, b))
         dot = sum(x*y for x, y in zip(a, b))
         na = (sum(x*x for x in a)) ** 0.5
         nb = (sum(x*x for x in b)) ** 0.5
-        return dot / (na * nb) if na * nb > 1e-10 else 0.0
+        return dot / (na * nb) if na and nb else 0.0
     
     def __enter__(self):
         return self
