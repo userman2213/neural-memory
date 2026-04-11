@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+# Ensure python/ is on path for mssql_store etc.
+_py_dir = str(Path(__file__).resolve().parent.parent / "python")
+if _py_dir not in sys.path:
+    sys.path.insert(0, _py_dir)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
