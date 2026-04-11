@@ -121,6 +121,9 @@ class DreamMSSQLStore:
 
         # Resolve: explicit args > env vars > defaults
         server = server or _env('MSSQL_SERVER', '127.0.0.1')
+        # Fix IPv6 localhost issue — MSSQL only listens on IPv4
+        if server == 'localhost':
+            server = '127.0.0.1'
         database = database or _env('MSSQL_DATABASE', 'NeuralMemory')
         username = username or _env('MSSQL_USERNAME', 'SA')
         password = password or _env('MSSQL_PASSWORD', '')
