@@ -551,14 +551,25 @@ class NeuralMemoryProvider(MemoryProvider):
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Extract and save important context before compression discards messages.
 
-        Scans user/assistant pairs that are about to be compressed away and
-        stores meaningful exchanges as memories so they survive the compression.
+        Uses weighted topic detection:
+        1. Scan messages for dominant topics (keyword frequency + recency)
+        2. Weight topic-relevant exchanges higher (salience boost)
+        3. Weight off-topic exchanges lower
+        4. Creates "perceptual bias" — focused topics survive compression better
+
         Returns a summary string for the compressor to preserve in its summary.
         """
         if not self._memory or not messages:
             return ""
 
+        # Step 1: Detect dominant topics from recent messages
+        topic_keywords = self._extract_topics(messages)
+        focus_topic = topic_keywords[0] if topic_keywords else ""
+
         extracted = []
+        focused_count = 0
+        unfocused_count = 0
+
         for i, msg in enumerate(messages):
             if msg.get("role") != "user":
                 continue
@@ -588,22 +599,96 @@ class NeuralMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
+            # Step 2: Weight by topic relevance
+            is_focused = self._is_topic_relevant(user_content, topic_keywords)
+            salience_boost = 1.5 if is_focused else 0.5
+            label = "compress-focus" if is_focused else "compress-bg"
+
             try:
-                self._memory.remember(combined, label="pre-compress")
-                extracted.append(user_content[:150])
+                self._memory.remember(
+                    combined, label=label,
+                )
+                extracted.append({
+                    "text": user_content[:150],
+                    "focused": is_focused,
+                    "salience": salience_boost,
+                })
+                if is_focused:
+                    focused_count += 1
+                else:
+                    unfocused_count += 1
             except Exception as e:
                 logger.debug("Neural on_pre_compress remember failed: %s", e)
 
         if not extracted:
             return ""
 
-        summary = "Key context preserved before compression:\n" + "\n".join(
-            f"- {t}" for t in extracted[:20]
+        # Build summary with focus indicator
+        lines = []
+        for e in extracted[:20]:
+            marker = "★" if e["focused"] else "·"
+            lines.append(f"  {marker} {e['text']}")
+
+        summary = (
+            f"Context preserved before compression "
+            f"({focused_count} focused, {unfocused_count} background):\n"
+            + "\n".join(lines)
         )
+        if focus_topic:
+            summary = f"Focus: {focus_topic}\n{summary}"
+
         logger.info(
-            "Neural memory: saved %d exchanges before compression", len(extracted)
+            "Neural memory: saved %d exchanges (%d focused on '%s') before compression",
+            len(extracted), focused_count, focus_topic,
         )
         return summary
+
+    def _extract_topics(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """Extract dominant topics from messages by keyword frequency.
+
+        Returns topics sorted by relevance (most relevant first).
+        """
+        from collections import Counter
+        stopwords = {
+            "the", "a", "an", "is", "was", "are", "were", "be", "been",
+            "have", "has", "had", "do", "does", "did", "will", "would",
+            "could", "should", "to", "of", "in", "for", "on", "with",
+            "at", "by", "from", "as", "into", "it", "its", "this", "that",
+            "and", "or", "but", "not", "if", "then", "so", "just", "also",
+            "very", "really", "like", "get", "got", "want", "need", "think",
+            "know", "see", "look", "make", "let", "use", "still", "now",
+            "how", "what", "when", "where", "which", "who", "why", "can",
+            "ich", "du", "er", "sie", "es", "wir", "ihr", "und", "oder",
+            "aber", "mit", "von", "für", "auf", "ist", "sind", "war",
+            "hat", "haben", "nicht", "auch", "noch", "schon", "mal",
+            "lass", "mehr", "hier", "dort", "dann", "denn", "weil",
+        }
+        word_freq = Counter()
+        # Weight recent messages higher
+        total = len(messages)
+        for idx, msg in enumerate(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            # Recency weight: last messages count 3x
+            recency = 3.0 if idx > total - 6 else 1.0
+            words = content.lower().split()
+            for w in words:
+                w = w.strip(".,!?;:'\"()[]{}#@")
+                if len(w) > 3 and w not in stopwords:
+                    word_freq[w] += recency
+        return [w for w, _ in word_freq.most_common(10)]
+
+    def _is_topic_relevant(self, text: str, topics: List[str]) -> bool:
+        """Check if text is related to the dominant topics."""
+        if not topics:
+            return False
+        text_lower = text.lower()
+        # Check top 5 topics
+        matches = sum(1 for t in topics[:5] if t in text_lower)
+        return matches >= 2 or (len(topics) > 0 and topics[0] in text_lower)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Store a session summary on session end."""
