@@ -31,7 +31,7 @@ def get_mssql(password=None):
         print("pyodbc required: pip install pyodbc")
         sys.exit(1)
 
-    pw = password or os.environ.get("MSSQL_PASSWORD", "q?}33YIToo:H%xue$Kr*")
+    pw = password or os.environ.get("MSSQL_PASSWORD", "")
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
         "SERVER=localhost;DATABASE=NeuralMemory;"
