@@ -80,7 +80,7 @@ class LlamaClient:
                 temperature=0.0,        # deterministic
                 seed=42,                # reproducibility
                 extra_body={
-                    "reasoning_budget": -1,  # cap CoT, force content
+                    "reasoning_budget": 512,  # match server budget, force content after CoT
                     "top_p": 1.0,
                     "min_p": 0.02,
                     "repeat_penalty": 1.05,

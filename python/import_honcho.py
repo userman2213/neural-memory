@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from neural_memory import Memory
 
-EXPORT_DIR = Path("/home/alca/honcho_export")
+EXPORT_DIR = Path(os.environ.get("HONCHO_EXPORT_DIR", Path.home() / "honcho_export"))
 DB_PATH = Path.home() / ".neural_memory" / "memory.db"
 
 def load_json(name: str):
@@ -76,10 +76,8 @@ def import_messages(mem: Memory, batch_size: int = 256):
         )
         conn.commit()
         
-        # Also update in-memory graph (without connections)
-        for label, emb in zip(batch_labels, embeddings):
-            mid = i + len(mem._python._graph_nodes) + 1  # approximate
-            # We'll rebuild graph at the end instead
+        # In-memory graph rebuilt from DB after import completes —
+        # IDs from bulk insert don't match sequential assumptions.
         
         done = min(i + batch_size, total)
         elapsed = time.time() - t0

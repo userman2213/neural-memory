@@ -348,9 +348,9 @@ size_t NeuralMemoryAdapter::consolidate() {
     auto start = Clock::now();
     
     // 1. Run memory consolidation (episodic -> semantic)
-    size_t consolidated = memory_manager_->consolidate(
-        config_.consolidation_merge_threshold
-    );
+    // Note: consolidate(batch_size) takes size_t, not float threshold.
+    // The threshold is used for auto-trigger check, not as batch parameter.
+    size_t consolidated = memory_manager_->consolidate(64);
     
     // 2. Update graph centrality
     graph_->update_centrality();
