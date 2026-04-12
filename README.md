@@ -5,11 +5,6 @@ Semantic memory system with knowledge graph, spreading activation, embedding-bas
 
 [![Demo](assets/cover.png)](https://github.com/user-attachments/assets/2d938624-cc39-4f8b-b35b-485b23e93355)
 
-> **Integration Status:** The upstream PR ([NousResearch/hermes-agent#7185](https://github.com/NousResearch/hermes-agent/pull/7185)) is currently open. Until it is merged, use the fork for full integration:
-> ```
-> https://github.com/itsXactlY/hermes-agent/tree/neural-memory-clean
-> ```
-
 ## Features
 
 - **Semantic Memory Storage**: Store memories with automatic embedding generation
