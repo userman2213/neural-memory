@@ -206,8 +206,20 @@ neural-memory-adapter/
 
 - **Database**: SQLite at `~/.neural_memory/memory.db`
 - **MSSQL**: `localhost/NeuralMemory` (Full Stack only)
-- **Embeddings**: Cached in `~/.neural_memory/models/` (~87MB, once)
-- **Graph**: In-memory graph loaded on startup
+- **Embeddings**: `BAAI/bge-m3` (1024d, sentence-transformers) — auto-downloaded on first use, cached at `~/.neural_memory/models/` (~8.8 GB)
+- **Graph**: In-memory graph + SQLite `connections` table loaded on startup
+
+### Embedding Auto-Setup
+
+The embedding backend auto-detects on first run:
+
+| Priority | Backend | Model | Dimensions | Requirements |
+|----------|---------|-------|------------|--------------|
+| 1st | sentence-transformers | BAAI/bge-m3 | 1024 | GPU recommended, auto-downloads model |
+| 2nd | tfidf | — | varies | `numpy` only |
+| 3rd | hash | — | 384 | nothing (always works) |
+
+Set `embedding_backend: sentence-transformers` in config.yaml to force the full model, or `auto` to let it pick the best available.
 
 ## Conflict Detection
 
