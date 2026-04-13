@@ -141,6 +141,47 @@ class NeuralMemoryCpp:
             ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_float), ctypes.c_int
         ]
         lib.neural_memory_think.restype = ctypes.c_int
+
+        # --- MSSQL Graph Edge Operations ---
+
+        # uint64_t neural_memory_store_mssql(handle, vec, dim, label, content)
+        lib.neural_memory_store_mssql.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+            ctypes.c_char_p, ctypes.c_char_p
+        ]
+        lib.neural_memory_store_mssql.restype = ctypes.c_uint64
+
+        # int neural_memory_add_edge(handle, from_id, to_id, weight, edge_type)
+        lib.neural_memory_add_edge.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64,
+            ctypes.c_float, ctypes.c_char_p
+        ]
+        lib.neural_memory_add_edge.restype = ctypes.c_int
+
+        # int neural_memory_batch_strengthen_edges(handle, from_ids, to_ids, count, delta)
+        lib.neural_memory_batch_strengthen_edges.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64),
+            ctypes.POINTER(ctypes.c_uint64), ctypes.c_int, ctypes.c_float
+        ]
+        lib.neural_memory_batch_strengthen_edges.restype = ctypes.c_int
+
+        # int neural_memory_bulk_weaken_prune(handle, delta, threshold)
+        lib.neural_memory_bulk_weaken_prune.argtypes = [
+            ctypes.c_void_p, ctypes.c_float, ctypes.c_float
+        ]
+        lib.neural_memory_bulk_weaken_prune.restype = ctypes.c_int
+
+        # int neural_memory_get_edges(handle, node_id, edge_ids, weights, max_edges)
+        lib.neural_memory_get_edges.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int
+        ]
+        lib.neural_memory_get_edges.restype = ctypes.c_int
+
+        # int64_t neural_memory_count_edges(handle)
+        lib.neural_memory_count_edges.argtypes = [ctypes.c_void_p]
+        lib.neural_memory_count_edges.restype = ctypes.c_int64
     
     def initialize(self, dim: int = 384, hopfield_capacity: int = 1024,
                    episodic_capacity: int = 10000) -> bool:
@@ -253,6 +294,77 @@ class NeuralMemoryCpp:
             'hopfield_patterns': stats.hopfield_patterns,
             'hopfield_occupancy': stats.hopfield_occupancy,
         }
+
+    # --- MSSQL Graph Edge Operations ---
+
+    def store_mssql(self, embedding: list[float], label: str = "", content: str = "") -> int:
+        """Store vector + create GraphNode in MSSQL. Returns node ID."""
+        assert self._handle, "Not initialized."
+        arr = (ctypes.c_float * len(embedding))(*embedding)
+        label_b = label.encode('utf-8') if label else None
+        content_b = content.encode('utf-8') if content else None
+        return self._lib.neural_memory_store_mssql(
+            self._handle, arr, len(embedding), label_b, content_b
+        )
+
+    def add_edge(self, from_id: int, to_id: int, weight: float, edge_type: str = "similar") -> bool:
+        """Add edge to GraphEdges in MSSQL."""
+        assert self._handle, "Not initialized."
+        return bool(self._lib.neural_memory_add_edge(
+            self._handle, from_id, to_id, weight, edge_type.encode('utf-8')
+        ))
+
+    def batch_strengthen_edges(self, edges: list[tuple[int, int]], delta: float = 0.05) -> int:
+        """Batch strengthen edges in MSSQL.
+
+        Args:
+            edges: list of (from_id, to_id) tuples
+            delta: weight increment
+        Returns:
+            Number of edges updated
+        """
+        assert self._handle, "Not initialized."
+        if not edges:
+            return 0
+        n = len(edges)
+        from_arr = (ctypes.c_uint64 * n)(*([e[0] for e in edges]))
+        to_arr = (ctypes.c_uint64 * n)(*([e[1] for e in edges]))
+        return self._lib.neural_memory_batch_strengthen_edges(
+            self._handle, from_arr, to_arr, n, delta
+        )
+
+    def bulk_weaken_prune(self, delta: float = 0.01, threshold: float = 0.05) -> int:
+        """Bulk weaken all edges, then prune below threshold.
+
+        Single SQL UPDATE + DELETE — no per-row deadlock risk.
+        Returns number of edges pruned.
+        """
+        assert self._handle, "Not initialized."
+        return self._lib.neural_memory_bulk_weaken_prune(self._handle, delta, threshold)
+
+    def get_edges(self, node_id: int, max_edges: int = 100) -> list[dict]:
+        """Get all edges for a node from MSSQL GraphEdges."""
+        assert self._handle, "Not initialized."
+        edge_ids = (ctypes.c_uint64 * (max_edges * 2))()
+        weights = (ctypes.c_float * max_edges)()
+
+        count = self._lib.neural_memory_get_edges(
+            self._handle, node_id, edge_ids, weights, max_edges
+        )
+
+        return [
+            {
+                'from_id': edge_ids[2 * i],
+                'to_id': edge_ids[2 * i + 1],
+                'weight': weights[i],
+            }
+            for i in range(count)
+        ]
+
+    def count_edges(self) -> int:
+        """Count edges in MSSQL GraphEdges table."""
+        assert self._handle, "Not initialized."
+        return self._lib.neural_memory_count_edges(self._handle)
     
     def __enter__(self):
         self.initialize()

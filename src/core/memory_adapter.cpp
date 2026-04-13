@@ -491,6 +491,84 @@ void NeuralMemoryAdapter::link_prediction_worker() {
 }
 
 // ============================================================================
+// MSSQL Graph Edge Operations (delegate to db_)
+// ============================================================================
+
+#ifdef USE_MSSQL
+
+uint64_t NeuralMemoryAdapter::store_mssql(const std::vector<float>& embedding,
+                                           const std::string& label,
+                                           const std::string& content) {
+    if (!db_) return 0;
+
+    // Generate a unique ID
+    uint64_t id = memory_manager_->remember(embedding, label, content);
+
+    // Store vector in MSSQL
+    std::string metadata = "{\"label\":\"" + label + "\",\"source\":\"mssql\"}";
+    if (!db_->insert_vector(id, embedding, metadata)) return 0;
+
+    // Create graph node
+    if (!db_->insert_graph_node(id, "memory",
+                                 "{\"label\":\"" + label + "\"}")) return 0;
+
+    return id;
+}
+
+bool NeuralMemoryAdapter::add_edge(uint64_t from_id, uint64_t to_id, float weight,
+                                    const std::string& edge_type) {
+    if (!db_) return false;
+    return db_->insert_graph_edge(from_id, to_id, edge_type, weight);
+}
+
+int NeuralMemoryAdapter::batch_add_edges(const std::vector<uint64_t>& from_ids,
+                                          const std::vector<uint64_t>& to_ids,
+                                          const std::vector<float>& weights,
+                                          const std::string& edge_type) {
+    if (!db_ || from_ids.empty() || from_ids.size() != to_ids.size() ||
+        from_ids.size() != weights.size())
+        return 0;
+
+    int added = 0;
+    for (size_t i = 0; i < from_ids.size(); ++i) {
+        if (db_->insert_graph_edge(from_ids[i], to_ids[i], edge_type, weights[i])) {
+            added++;
+        }
+    }
+    return added;
+}
+
+int NeuralMemoryAdapter::batch_strengthen_edges(const std::vector<uint64_t>& from_ids,
+                                                 const std::vector<uint64_t>& to_ids,
+                                                 float delta) {
+    if (!db_) return 0;
+    return db_->batch_strengthen_edges(from_ids, to_ids, delta);
+}
+
+int NeuralMemoryAdapter::bulk_weaken_prune(float delta, float threshold) {
+    if (!db_) return 0;
+    return db_->bulk_weaken_prune(delta, threshold);
+}
+
+std::vector<NeuralMemoryAdapter::EdgeInfo> NeuralMemoryAdapter::get_edges(uint64_t node_id) const {
+    if (!db_) return {};
+    auto db_edges = db_->get_edges(node_id);
+    std::vector<EdgeInfo> result;
+    result.reserve(db_edges.size());
+    for (const auto& e : db_edges) {
+        result.push_back({e.from_id, e.to_id, e.weight});
+    }
+    return result;
+}
+
+int64_t NeuralMemoryAdapter::count_edges() const {
+    if (!db_) return 0;
+    return db_->count_edges();
+}
+
+#endif
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

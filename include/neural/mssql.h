@@ -456,6 +456,33 @@ public:
     size_t pool_available() const;
     size_t pool_in_use() const;
 
+    // ---- Batch Edge Operations ----
+
+    // Batch strengthen edges: UPDATE weight = MIN(weight + delta, 1.0)
+    int batch_strengthen_edges(const std::vector<uint64_t>& from_ids,
+                               const std::vector<uint64_t>& to_ids,
+                               float delta);
+
+    // Bulk weaken + prune: weaken all edges, then delete below threshold
+    int bulk_weaken_prune(float delta, float threshold);
+
+    // Edge info struct for get_edges
+    struct EdgeInfo {
+        uint64_t from_id;
+        uint64_t to_id;
+        float weight;
+    };
+
+    // Get all edges for a node (from OR to)
+    std::vector<EdgeInfo> get_edges(uint64_t node_id) const;
+
+    // Count total edges
+    int64_t count_edges() const;
+
+    // MERGE/UPSERT: insert edge if not exists, update weight if exists
+    bool add_graph_edge_or_update(uint64_t from_id, uint64_t to_id,
+                                  const std::string& edge_type, float weight);
+
     // Compute cosine similarity in C++ (used after fetching VARBINARY)
     static float cosine_similarity(const std::vector<float>& a, const std::vector<float>& b);
 

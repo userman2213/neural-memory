@@ -12,3 +12,5 @@ Makefile
 .neural_memory/
 *.db
 .env
+build_debug/
+benchmarks/results

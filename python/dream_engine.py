@@ -17,6 +17,7 @@ Otherwise falls back to SQLite.
 from __future__ import annotations
 
 import logging
+import random
 import sqlite3
 import threading
 import time
@@ -87,8 +88,13 @@ class DreamBackend:
     def get_recent_memories(self, limit: int = 100) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
+    def get_random_memories(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """Get a random sample of memories from the full history."""
+        raise NotImplementedError
+
     def get_isolated_memories(self, max_connections: int = 3,
-                               limit: int = 50) -> List[Dict[str, Any]]:
+                               limit: int = 50,
+                               oldest_first: bool = False) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     def get_connections(self) -> List[Dict[str, Any]]:
@@ -143,7 +149,10 @@ class SQLiteDreamBackend(DreamBackend):
             conn.close()
 
     def _connect(self):
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=10000")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -195,18 +204,36 @@ class SQLiteDreamBackend(DreamBackend):
         finally:
             conn.close()
 
-    def get_isolated_memories(self, max_connections: int = 3,
-                               limit: int = 50) -> List[Dict[str, Any]]:
+    def get_random_memories(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """Get a random sample of memories from the full history.
+
+        Uses SQLite's random() for unbiased sampling across all eras.
+        """
         conn = self._connect()
         try:
-            rows = conn.execute("""
+            rows = conn.execute(
+                "SELECT id, content FROM memories "
+                "ORDER BY RANDOM() LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return [{"id": r["id"], "content": r["content"] or ""} for r in rows]
+        finally:
+            conn.close()
+
+    def get_isolated_memories(self, max_connections: int = 3,
+                               limit: int = 50,
+                               oldest_first: bool = False) -> List[Dict[str, Any]]:
+        order = "ASC" if oldest_first else "DESC"
+        conn = self._connect()
+        try:
+            rows = conn.execute(f"""
                 SELECT m.id, m.content,
                        (SELECT COUNT(*) FROM connections
                         WHERE source_id = m.id OR target_id = m.id) as cnt
                 FROM memories m
                 WHERE (SELECT COUNT(*) FROM connections
                        WHERE source_id = m.id OR target_id = m.id) < ?
-                ORDER BY m.created_at DESC LIMIT ?
+                ORDER BY m.created_at {order} LIMIT ?
             """, (max_connections, limit)).fetchall()
             return [
                 {"id": r["id"], "content": r["content"] or "", "connection_count": r["cnt"]}
@@ -358,28 +385,41 @@ class DreamEngine:
       NREM  — Replay recent memories, strengthen active, prune dead
       REM   — Explore isolated memories, discover bridges via embedding
       Insight — Community detection, bridge identification, abstraction
+
+    Deep dream: every DEEP_DREAM_INTERVAL cycles, runs a deeper
+    consolidation pass with expanded memory window and full-history
+    random sampling to prevent long-term memory erosion.
     """
+
+    DEEP_DREAM_INTERVAL = 10  # every Nth cycle is a deep dream
+    HISTORY_SAMPLE_RATIO = 0.3  # 30% of NREM budget from random history
+    STRONG_EDGE_THRESHOLD = 0.4  # edges above this resist decay
+    STRONG_EDGE_DECAY_FACTOR = 0.2  # strong edges decay 5x slower
 
     def __init__(
         self,
         backend: DreamBackend,
         neural_memory: Optional[Any] = None,
-        idle_threshold: float = 300.0,     # 5 min idle
+        idle_threshold: float = 600.0,     # 10 min idle (was 5min — too aggressive)
         memory_threshold: int = 50,         # dream every N new memories
         max_memories_per_cycle: int = 100,
+        min_dream_interval: float = 600.0,  # 10 min cooldown between cycles
     ):
         self._backend = backend
         self._memory = neural_memory        # NeuralMemory instance for think/recall
         self._idle_threshold = idle_threshold
         self._memory_threshold = memory_threshold
         self._max_memories = max_memories_per_cycle
+        self._min_dream_interval = min_dream_interval
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._last_activity = time.time()
+        self._last_dream_time = 0.0         # cooldown tracking
         self._memory_count_at_last_dream = 0
         self._dream_count = 0
+        self._bridge_node_ids: set = set()  # populated by insight phase
 
     @classmethod
     def sqlite(cls, db_path: str, neural_memory: Optional[Any] = None, **kwargs) -> 'DreamEngine':
@@ -426,7 +466,11 @@ class DreamEngine:
     # -- Main loop -----------------------------------------------------------
 
     def _dream_loop(self) -> None:
-        """Background daemon: dream when idle or threshold reached."""
+        """Background daemon: dream when idle or threshold reached.
+
+        Cooldown prevents rapid re-triggering — at least min_dream_interval
+        seconds must pass between cycles, even if idle.
+        """
         while self._running:
             try:
                 time.sleep(30)
@@ -434,6 +478,12 @@ class DreamEngine:
                     break
 
                 idle = time.time() - self._last_activity
+                since_last_dream = time.time() - self._last_dream_time
+
+                # Cooldown: don't dream again too soon
+                if since_last_dream < self._min_dream_interval:
+                    continue
+
                 try:
                     stats = self._memory.stats() if self._memory else {"memories": 0}
                     total = stats.get("memories", 0)
@@ -443,8 +493,8 @@ class DreamEngine:
 
                 should_dream = (
                     idle >= self._idle_threshold
-                    or new_since_last >= self._memory_threshold
-                )
+                    and new_since_last > 0  # Only if there are new memories
+                ) or new_since_last >= self._memory_threshold
 
                 if should_dream:
                     logger.info(
@@ -459,18 +509,33 @@ class DreamEngine:
 
     # -- Dream Cycle ---------------------------------------------------------
 
+    def _is_deep_dream(self) -> bool:
+        """Check if the current cycle should be a deep dream."""
+        return (self._dream_count + 1) % self.DEEP_DREAM_INTERVAL == 0
+
     def _run_dream_cycle(self) -> Dict[str, Any]:
-        """Execute a full NREM → REM → Insight cycle."""
+        """Execute a full NREM → REM → Insight cycle.
+
+        Every DEEP_DREAM_INTERVAL cycles, runs a deep dream with:
+        - 3x memory window for NREM
+        - All-history random sampling (no recency bias)
+        - Oldest-first REM exploration
+        """
         with self._lock:
             start = time.time()
-            total_stats: Dict[str, Any] = {"nrem": {}, "rem": {}, "insights": {}}
+            is_deep = self._is_deep_dream()
+            total_stats: Dict[str, Any] = {
+                "nrem": {}, "rem": {}, "insights": {},
+                "deep_dream": is_deep,
+            }
 
             try:
-                total_stats["nrem"] = self._phase_nrem()
-                total_stats["rem"] = self._phase_rem()
+                total_stats["nrem"] = self._phase_nrem(deep=is_deep)
+                total_stats["rem"] = self._phase_rem(deep=is_deep)
                 total_stats["insights"] = self._phase_insights()
 
                 self._dream_count += 1
+                self._last_dream_time = time.time()  # cooldown tracking
                 if self._memory:
                     try:
                         s = self._memory.stats()
@@ -481,12 +546,15 @@ class DreamEngine:
                 total_stats["duration"] = time.time() - start
                 total_stats["dream_id"] = self._dream_count
 
+                mode = "DEEP " if is_deep else ""
                 logger.info(
-                    "Dream #%d complete: %.1fs | NREM: %d+/ %d- / %d pruned | REM: %d bridges | Insights: %d",
-                    self._dream_count, total_stats["duration"],
+                    "%sDream #%d complete: %.1fs | NREM: %d+/ %d- / %d pruned / %d protected"
+                    " | REM: %d bridges | Insights: %d",
+                    mode, self._dream_count, total_stats["duration"],
                     total_stats["nrem"].get("strengthened", 0),
                     total_stats["nrem"].get("weakened", 0),
                     total_stats["nrem"].get("pruned", 0),
+                    total_stats["nrem"].get("protected", 0),
                     total_stats["rem"].get("bridges", 0),
                     total_stats["insights"].get("insights", 0),
                 )
@@ -499,20 +567,46 @@ class DreamEngine:
 
     # -- Phase 1: NREM -------------------------------------------------------
 
-    def _phase_nrem(self) -> Dict[str, Any]:
+    def _phase_nrem(self, deep: bool = False) -> Dict[str, Any]:
         """NREM: Replay, strengthen active, weaken inactive, prune dead.
 
-        For each recent memory:
-          1. Fire spreading activation
-          2. Activated edges: weight += 0.05
-          3. Non-activated edges: weight -= 0.01
-          4. Edges below 0.05: prune
+        Hybrid sampling: mixes recent memories with random historical samples
+        so old connections get replayed and don't silently decay.
+
+        Decay protection:
+        - Strong edges (weight > STRONG_EDGE_THRESHOLD) decay 5x slower
+        - Bridge edges (connecting communities) are immune to decay
+        - Deep dream cycles use 3x the memory window
+
+        Batched for performance: all updates in one transaction.
         """
-        stats = {"processed": 0, "strengthened": 0, "weakened": 0, "pruned": 0}
-        session_id = self._backend.start_session("nrem")
+        stats = {
+            "processed": 0, "strengthened": 0,
+            "weakened": 0, "pruned": 0, "protected": 0,
+        }
+        session_id = self._backend.start_session("deep-nrem" if deep else "nrem")
 
         try:
-            memories = self._backend.get_recent_memories(self._max_memories)
+            # --- Hybrid sampling: recent + random historical ---
+            budget = self._max_memories * (3 if deep else 1)
+            recent_budget = int(budget * (1 - self.HISTORY_SAMPLE_RATIO))
+            history_budget = budget - recent_budget
+
+            memories = self._backend.get_recent_memories(recent_budget)
+            seen_ids = {m["id"] for m in memories}
+
+            # Add random historical memories (deduped against recent)
+            try:
+                historical = self._backend.get_random_memories(history_budget * 2)
+                for m in historical:
+                    if m["id"] not in seen_ids:
+                        memories.append(m)
+                        seen_ids.add(m["id"])
+                    if len(memories) >= budget:
+                        break
+            except NotImplementedError:
+                pass  # Backend doesn't support random sampling
+
             if not memories:
                 return stats
 
@@ -531,32 +625,101 @@ class DreamEngine:
                         pass
                 stats["processed"] += 1
 
-            # Get all connections and update weights
+            # --- Batch update with decay protection ---
             all_conns = self._backend.get_connections()
-            now = time.time()
+            to_strengthen = []
+            to_weaken = []
 
             for conn in all_conns:
                 src, tgt = conn["source_id"], conn["target_id"]
                 key = (min(src, tgt), max(src, tgt))
+                old_w = conn["weight"]
 
                 if key in activated_edges:
-                    old_w = conn["weight"]
-                    self._backend.strengthen_connection(src, tgt, 0.05)
-                    self._backend.log_connection_change(
-                        src, tgt, old_w, min(old_w + 0.05, 1.0), "nrem_strengthen"
-                    )
+                    new_w = min(old_w + 0.05, 1.0)
+                    to_strengthen.append((new_w, src, tgt))
                     stats["strengthened"] += 1
-                else:
-                    old_w = conn["weight"]
-                    if old_w > 0.05:
-                        self._backend.weaken_connection(src, tgt, 0.01)
-                        self._backend.log_connection_change(
-                            src, tgt, old_w, max(old_w - 0.01, 0.0), "nrem_weaken"
+                elif old_w > 0.05:
+                    # --- Decay protection ---
+                    # Bridge edges: immune to decay
+                    if src in self._bridge_node_ids and tgt in self._bridge_node_ids:
+                        stats["protected"] += 1
+                        continue
+                    # Strong edges: decay 5x slower
+                    if old_w >= self.STRONG_EDGE_THRESHOLD:
+                        decay = 0.01 * self.STRONG_EDGE_DECAY_FACTOR
+                    else:
+                        decay = 0.01
+                    new_w = max(old_w - decay, 0.0)
+                    to_weaken.append((new_w, src, tgt))
+                    stats["weakened"] += 1
+
+            # Execute batch updates
+            if isinstance(self._backend, SQLiteDreamBackend):
+                conn = self._backend._connect()
+                try:
+                    conn.execute("BEGIN")
+                    if to_strengthen:
+                        conn.executemany(
+                            "UPDATE connections SET weight = ? WHERE source_id = ? AND target_id = ?",
+                            to_strengthen
                         )
-                        stats["weakened"] += 1
+                    if to_weaken:
+                        conn.executemany(
+                            "UPDATE connections SET weight = ? WHERE source_id = ? AND target_id = ?",
+                            to_weaken
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                # MSSQL batch updates — single commit, no per-row logging
+                try:
+                    batch_method = getattr(self._backend, 'batch_strengthen_connections', None)
+                    if batch_method and to_strengthen:
+                        batch_method(to_strengthen)
+                    elif to_strengthen:
+                        # Fallback: execute in single transaction
+                        cursor = self._backend.conn.cursor()
+                        for new_w, src, tgt in to_strengthen:
+                            cursor.execute(
+                                "UPDATE connections SET weight = ? WHERE source_id = ? AND target_id = ?",
+                                new_w, src, tgt
+                            )
+                        self._backend.conn.commit()
+
+                    batch_weaken = getattr(self._backend, 'batch_weaken_connections', None)
+                    if batch_weaken and to_weaken:
+                        batch_weaken(to_weaken)
+                    elif to_weaken:
+                        cursor = self._backend.conn.cursor()
+                        for new_w, src, tgt in to_weaken:
+                            cursor.execute(
+                                "UPDATE connections SET weight = ? WHERE source_id = ? AND target_id = ?",
+                                new_w, src, tgt
+                            )
+                        self._backend.conn.commit()
+                except Exception as e:
+                    logger.warning("MSSQL batch update failed: %s", e)
 
             # Prune dead connections
             stats["pruned"] = self._backend.prune_weak(0.05)
+
+            # Periodic cleanup: prune old history every 50 cycles
+            if self._dream_count % 50 == 0:
+                try:
+                    prune_fn = getattr(self._backend, 'prune_connection_history', None)
+                    if prune_fn:
+                        pruned = prune_fn(keep_days=7)
+                        if pruned:
+                            logger.info("Pruned %d old connection_history entries", pruned)
+                    prune_sessions = getattr(self._backend, 'prune_old_dream_sessions', None)
+                    if prune_sessions:
+                        pruned_s = prune_sessions(keep_days=30)
+                        if pruned_s:
+                            logger.info("Pruned %d old dream sessions", pruned_s)
+                except Exception as e:
+                    logger.debug("Prune cleanup error: %s", e)
 
             self._backend.finish_session(session_id, stats)
 
@@ -567,24 +730,41 @@ class DreamEngine:
 
     # -- Phase 2: REM --------------------------------------------------------
 
-    def _phase_rem(self) -> Dict[str, Any]:
+    def _phase_rem(self, deep: bool = False) -> Dict[str, Any]:
         """REM: Explore isolated memories, discover bridges.
 
         1. Find isolated memories (few connections)
         2. Search via embedding similarity for unconnected but similar
         3. Create tentative bridge connections (weight 0.1-0.3)
+
+        Alternates between recent-first and oldest-first on each cycle
+        to ensure historical orphans get explored too. Deep dreams
+        always explore oldest-first and with a larger budget.
         """
         stats = {"explored": 0, "bridges": 0, "rejected": 0}
-        session_id = self._backend.start_session("rem")
+        session_id = self._backend.start_session("deep-rem" if deep else "rem")
 
         try:
-            isolated = self._backend.get_isolated_memories(max_connections=3, limit=50)
+            # Alternate direction: even cycles = recent-first, odd = oldest-first
+            # Deep dreams always explore oldest-first with expanded budget
+            oldest_first = deep or (self._dream_count % 2 == 1)
+            limit = 100 if deep else 50
+
+            try:
+                isolated = self._backend.get_isolated_memories(
+                    max_connections=3, limit=limit, oldest_first=oldest_first,
+                )
+            except TypeError:
+                # Backend doesn't support oldest_first parameter
+                isolated = self._backend.get_isolated_memories(
+                    max_connections=3, limit=limit,
+                )
             if not isolated:
                 return stats
 
             for mem in isolated:
                 mid = mem["id"]
-                content = mem["content"]
+                content = mem.get("content", "")
 
                 if not self._memory or not content:
                     continue
@@ -681,6 +861,9 @@ class DreamEngine:
                     bridge_nodes.add(e["source_id"])
                     bridge_nodes.add(e["target_id"])
             stats["bridges"] = len(bridge_nodes)
+
+            # Cache bridge nodes for NREM decay protection
+            self._bridge_node_ids = bridge_nodes
 
             # Create cluster insights
             for i, comm in enumerate(communities):

@@ -3,6 +3,7 @@
 #include "neural/c_api.h"
 #include "neural/memory_adapter.h"
 #include <cstring>
+#include <cstdlib>
 #include <new>
 
 using namespace neural;
@@ -34,7 +35,22 @@ NEURAL_API NeuralMemoryHandle neural_memory_create_dim(int vector_dim) {
     config.enable_link_prediction = false;
     // Disable MSSQL (Python client uses SQLite)
 #ifdef USE_MSSQL
-    config.db_config.server = "";  // Will cause mssql init to be a no-op
+    // Read MSSQL config from environment variables
+    if (const char* server = std::getenv("MSSQL_SERVER")) {
+        config.db_config.server = server;
+    }
+    if (const char* database = std::getenv("MSSQL_DATABASE")) {
+        config.db_config.database = database;
+    }
+    if (const char* username = std::getenv("MSSQL_USERNAME")) {
+        config.db_config.username = username;
+    }
+    if (const char* password = std::getenv("MSSQL_PASSWORD")) {
+        config.db_config.password = password;
+    }
+    if (!config.db_config.server.empty() && config.db_config.username.empty()) {
+        config.db_config.server = ""; // No credentials, disable MSSQL
+    }
 #endif
 
     if (!adapter->initialize(config)) {
@@ -287,3 +303,157 @@ NEURAL_API void neural_memory_stats(NeuralMemoryHandle handle, NeuralMemoryStats
     stats->total_searches = s.total_searches;
     stats->total_consolidations = s.total_consolidations;
 }
+
+// ============================================================================
+// Graph / Edge Operations (MSSQL-backed)
+// ============================================================================
+
+#ifdef USE_MSSQL
+
+NEURAL_API uint64_t neural_memory_store_mssql(
+    NeuralMemoryHandle handle,
+    const float* vec,
+    int dim,
+    const char* label,
+    const char* content
+) {
+    if (!handle || !vec || dim <= 0) return 0;
+    auto* adapter = to_adapter(handle);
+
+    std::vector<float> embedding(vec, vec + dim);
+    std::string lbl = label ? label : "";
+    std::string cnt = content ? content : "";
+
+    return adapter->store_mssql(embedding, lbl, cnt);
+}
+
+NEURAL_API int neural_memory_add_edge(
+    NeuralMemoryHandle handle,
+    uint64_t from_id,
+    uint64_t to_id,
+    float weight,
+    const char* edge_type
+) {
+    if (!handle) return 0;
+    auto* adapter = to_adapter(handle);
+
+    std::string etype = edge_type ? edge_type : "similar";
+    return adapter->add_edge(from_id, to_id, weight, etype) ? 1 : 0;
+}
+
+NEURAL_API int neural_memory_batch_add_edges(
+    NeuralMemoryHandle handle,
+    const uint64_t* from_ids,
+    const uint64_t* to_ids,
+    const float* weights,
+    int count,
+    const char* edge_type
+) {
+    if (!handle || !from_ids || !to_ids || !weights || count <= 0) return 0;
+    auto* adapter = to_adapter(handle);
+
+    std::vector<uint64_t> fids(from_ids, from_ids + count);
+    std::vector<uint64_t> tids(to_ids, to_ids + count);
+    std::vector<float> wts(weights, weights + count);
+    std::string etype = edge_type ? edge_type : "similar";
+
+    return adapter->batch_add_edges(fids, tids, wts, etype);
+}
+
+NEURAL_API int neural_memory_batch_strengthen_edges(
+    NeuralMemoryHandle handle,
+    const uint64_t* from_ids,
+    const uint64_t* to_ids,
+    int count,
+    float delta
+) {
+    if (!handle || !from_ids || !to_ids || count <= 0) return 0;
+    auto* adapter = to_adapter(handle);
+
+    std::vector<uint64_t> fids(from_ids, from_ids + count);
+    std::vector<uint64_t> tids(to_ids, to_ids + count);
+
+    return adapter->batch_strengthen_edges(fids, tids, delta);
+}
+
+NEURAL_API int neural_memory_bulk_weaken_prune(
+    NeuralMemoryHandle handle,
+    float delta,
+    float threshold
+) {
+    if (!handle) return 0;
+    return to_adapter(handle)->bulk_weaken_prune(delta, threshold);
+}
+
+NEURAL_API int neural_memory_get_edges(
+    NeuralMemoryHandle handle,
+    uint64_t node_id,
+    uint64_t* edge_ids,
+    float* weights,
+    int max_edges
+) {
+    if (!handle || !edge_ids || !weights || max_edges <= 0) return 0;
+    auto* adapter = to_adapter(handle);
+
+    auto edges = adapter->get_edges(node_id);
+    int count = 0;
+    for (const auto& e : edges) {
+        if (count >= max_edges) break;
+        edge_ids[2 * count] = e.from_id;
+        edge_ids[2 * count + 1] = e.to_id;
+        weights[count] = e.weight;
+        count++;
+    }
+    return count;
+}
+
+NEURAL_API int64_t neural_memory_count_edges(NeuralMemoryHandle handle) {
+    if (!handle) return 0;
+    return to_adapter(handle)->count_edges();
+}
+
+#else
+
+// Stubs when MSSQL is not compiled in
+
+NEURAL_API uint64_t neural_memory_store_mssql(
+    NeuralMemoryHandle handle, const float* vec, int dim,
+    const char* label, const char* content) {
+    return 0;
+}
+
+NEURAL_API int neural_memory_add_edge(
+    NeuralMemoryHandle handle, uint64_t from_id, uint64_t to_id,
+    float weight, const char* edge_type) {
+    return 0;
+}
+
+NEURAL_API int neural_memory_batch_add_edges(
+    NeuralMemoryHandle handle, const uint64_t* from_ids,
+    const uint64_t* to_ids, const float* weights,
+    int count, const char* edge_type) {
+    return 0;
+}
+
+NEURAL_API int neural_memory_batch_strengthen_edges(
+    NeuralMemoryHandle handle, const uint64_t* from_ids,
+    const uint64_t* to_ids, int count, float delta) {
+    return 0;
+}
+
+NEURAL_API int neural_memory_bulk_weaken_prune(
+    NeuralMemoryHandle handle, float delta, float threshold) {
+    return 0;
+}
+
+NEURAL_API int neural_memory_get_edges(
+    NeuralMemoryHandle handle, uint64_t node_id,
+    uint64_t* edge_ids, float* weights, int max_edges) {
+    return 0;
+}
+
+NEURAL_API int64_t neural_memory_count_edges(NeuralMemoryHandle handle) {
+    return 0;
+}
+
+#endif

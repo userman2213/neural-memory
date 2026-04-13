@@ -224,6 +224,47 @@ public:
     
     const AdapterConfig& config() const { return config_; }
 
+    // --- MSSQL Graph Edge Operations (direct DB access) ---
+#ifdef USE_MSSQL
+
+    // Store vector + create GraphNode in MSSQL. Returns node ID.
+    uint64_t store_mssql(const std::vector<float>& embedding,
+                         const std::string& label,
+                         const std::string& content);
+
+    // Add edge to GraphEdges. Returns true on success.
+    bool add_edge(uint64_t from_id, uint64_t to_id, float weight,
+                  const std::string& edge_type = "similar");
+
+    // Batch add edges. Returns count added.
+    int batch_add_edges(const std::vector<uint64_t>& from_ids,
+                        const std::vector<uint64_t>& to_ids,
+                        const std::vector<float>& weights,
+                        const std::string& edge_type = "similar");
+
+    // Batch strengthen: UPDATE GraphEdges SET weight = CASE WHEN weight + delta > 1.0 THEN 1.0 ELSE weight + delta END WHERE from_node_id = ? AND to_node_id = ?
+    int batch_strengthen_edges(const std::vector<uint64_t>& from_ids,
+                               const std::vector<uint64_t>& to_ids,
+                               float delta);
+
+    // Bulk weaken + prune: UPDATE GraphEdges SET weight = MAX(weight - delta, 0) WHERE weight > threshold; DELETE WHERE weight < threshold
+    int bulk_weaken_prune(float delta, float threshold);
+
+    // Get all edges for a node
+    struct EdgeInfo {
+        uint64_t from_id;
+        uint64_t to_id;
+        float weight;
+    };
+    std::vector<EdgeInfo> get_edges(uint64_t node_id) const;
+
+    // Count edges
+    int64_t count_edges() const;
+
+    mssql::MSSQLVectorAdapter* db() { return db_.get(); }
+
+#endif
+
 private:
     AdapterConfig config_;
     bool initialized_ = false;

@@ -126,11 +126,71 @@ NEURAL_API int neural_memory_read(
 );
 
 // ============================================================================
-// Graph / Spreading Activation
+// Graph / Edge Operations (MSSQL-backed)
 // ============================================================================
 
-// Run spreading activation from a memory ID.
-// Returns number of activated nodes. Writes node IDs and activations to arrays.
+// Store a vector into NeuralMemory table + create GraphNode. Returns node ID.
+NEURAL_API uint64_t neural_memory_store_mssql(
+    NeuralMemoryHandle handle,
+    const float* vec,
+    int dim,
+    const char* label,
+    const char* content
+);
+
+// Add an edge to GraphEdges. Returns 1 on success.
+NEURAL_API int neural_memory_add_edge(
+    NeuralMemoryHandle handle,
+    uint64_t from_id,
+    uint64_t to_id,
+    float weight,
+    const char* edge_type
+);
+
+// Batch add edges. Returns number of edges added.
+NEURAL_API int neural_memory_batch_add_edges(
+    NeuralMemoryHandle handle,
+    const uint64_t* from_ids,
+    const uint64_t* to_ids,
+    const float* weights,
+    int count,
+    const char* edge_type
+);
+
+// Batch strengthen edges: update weight = min(weight + delta, 1.0).
+// from_ids/to_ids are parallel arrays of length count.
+NEURAL_API int neural_memory_batch_strengthen_edges(
+    NeuralMemoryHandle handle,
+    const uint64_t* from_ids,
+    const uint64_t* to_ids,
+    int count,
+    float delta
+);
+
+// Bulk weaken all edges: UPDATE GraphEdges SET weight = MAX(weight - delta, 0.0) WHERE weight > threshold.
+// Then prunes edges below threshold. Returns number of edges pruned.
+NEURAL_API int neural_memory_bulk_weaken_prune(
+    NeuralMemoryHandle handle,
+    float delta,
+    float threshold
+);
+
+// Get all edges for a node (from OR to). Writes up to max_edges into buffer.
+// Returns actual number of edges written.
+// edge_ids[2*i] = from_id, edge_ids[2*i+1] = to_id, weights[i] = weight
+NEURAL_API int neural_memory_get_edges(
+    NeuralMemoryHandle handle,
+    uint64_t node_id,
+    uint64_t* edge_ids,     // Must hold max_edges * 2 uint64_t
+    float* weights,         // Must hold max_edges float
+    int max_edges
+);
+
+// Count edges in GraphEdges table.
+NEURAL_API int64_t neural_memory_count_edges(NeuralMemoryHandle handle);
+
+// Spreading activation via C++ (runs on GraphNodes/GraphEdges from MSSQL).
+// Returns number of activated nodes. Writes to node_ids[] and activations[].
 NEURAL_API int neural_memory_think(
     NeuralMemoryHandle handle,
     uint64_t start_id,

@@ -35,7 +35,9 @@ void run_demo() {
     // Initialize
     NeuralMemoryAdapter adapter;
     AdapterConfig config = AdapterConfig::fast();
+#ifdef USE_MSSQL
     config.db_config.server = "";  // No DB for demo
+#endif
     
     if (!adapter.initialize(config)) {
         std::cerr << "Failed to initialize\n";
@@ -102,7 +104,9 @@ void run_interactive() {
     
     NeuralMemoryAdapter adapter;
     AdapterConfig config = AdapterConfig::balanced();
+#ifdef USE_MSSQL
     config.db_config.server = "";
+#endif
     
     if (!adapter.initialize(config)) {
         std::cerr << "Failed to initialize\n";

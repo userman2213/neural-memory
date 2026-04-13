@@ -886,4 +886,243 @@ size_t MSSQLVectorAdapter::pool_in_use() const {
     return pool_ ? pool_->in_use_connections() : 0;
 }
 
+// ============================================================================
+// Batch Edge Operations (for NREM deadlock prevention)
+// ============================================================================
+
+int MSSQLVectorAdapter::batch_strengthen_edges(
+    const std::vector<uint64_t>& from_ids,
+    const std::vector<uint64_t>& to_ids,
+    float delta)
+{
+    if (!initialized_ || !pool_ || from_ids.empty() || from_ids.size() != to_ids.size())
+        return 0;
+
+    auto conn = pool_->acquire();
+    if (!conn) return 0;
+
+    conn->begin_transaction();
+    Statement stmt(conn->dbc());
+
+    std::string sql =
+        "UPDATE GraphEdges SET weight = CASE "
+        "WHEN weight + ? > 1.0 THEN 1.0 ELSE weight + ? END "
+        "WHERE from_node_id = ? AND to_node_id = ?";
+
+    if (!stmt.prepare(sql)) {
+        conn->rollback_transaction();
+        pool_->release(std::move(conn));
+        return 0;
+    }
+
+    int updated = 0;
+    for (size_t i = 0; i < from_ids.size(); ++i) {
+        int64_t from_val = static_cast<int64_t>(from_ids[i]);
+        int64_t to_val = static_cast<int64_t>(to_ids[i]);
+        SQLLEN ind = 0;
+
+        SQLBindParameter(stmt.stmt(), 1, SQL_PARAM_INPUT,
+                         SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&delta), 0, &ind);
+        SQLBindParameter(stmt.stmt(), 2, SQL_PARAM_INPUT,
+                         SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&delta), 0, &ind);
+        SQLBindParameter(stmt.stmt(), 3, SQL_PARAM_INPUT,
+                         SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &from_val, 0, &ind);
+        SQLBindParameter(stmt.stmt(), 4, SQL_PARAM_INPUT,
+                         SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &to_val, 0, &ind);
+
+        if (stmt.execute()) {
+            updated++;
+        }
+        stmt.reset();
+    }
+
+    conn->commit_transaction();
+    pool_->release(std::move(conn));
+    return updated;
+}
+
+int MSSQLVectorAdapter::bulk_weaken_prune(float delta, float threshold) {
+    if (!initialized_ || !pool_) return 0;
+
+    auto conn = pool_->acquire();
+    if (!conn) return 0;
+
+    conn->begin_transaction();
+
+    // Step 1: Bulk weaken
+    {
+        Statement stmt(conn->dbc());
+        std::string sql =
+            "UPDATE GraphEdges SET weight = CASE "
+            "WHEN weight - ? < 0.0 THEN 0.0 ELSE weight - ? END "
+            "WHERE weight > ?";
+
+        if (!stmt.prepare(sql)) {
+            conn->rollback_transaction();
+            pool_->release(std::move(conn));
+            return 0;
+        }
+
+        SQLLEN ind = 0;
+        SQLBindParameter(stmt.stmt(), 1, SQL_PARAM_INPUT,
+                         SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&delta), 0, &ind);
+        SQLBindParameter(stmt.stmt(), 2, SQL_PARAM_INPUT,
+                         SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&delta), 0, &ind);
+        SQLBindParameter(stmt.stmt(), 3, SQL_PARAM_INPUT,
+                         SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&threshold), 0, &ind);
+
+        stmt.execute();
+    }
+
+    // Step 2: Prune
+    int pruned = 0;
+    {
+        Statement stmt(conn->dbc());
+        std::string sql = "DELETE FROM GraphEdges WHERE weight < ?";
+
+        if (stmt.prepare(sql)) {
+            SQLLEN ind = 0;
+            SQLBindParameter(stmt.stmt(), 1, SQL_PARAM_INPUT,
+                             SQL_C_FLOAT, SQL_REAL, 0, 0, const_cast<float*>(&threshold), 0, &ind);
+            if (stmt.execute()) {
+                Statement count_stmt(conn->dbc());
+                if (count_stmt.prepare("SELECT @@ROWCOUNT") &&
+                    count_stmt.execute() && count_stmt.fetch()) {
+                    pruned = static_cast<int>(count_stmt.get_int64(1).value_or(0));
+                }
+            }
+        }
+    }
+
+    conn->commit_transaction();
+    pool_->release(std::move(conn));
+    return pruned;
+}
+
+std::vector<MSSQLVectorAdapter::EdgeInfo> MSSQLVectorAdapter::get_edges(uint64_t node_id) const {
+    std::vector<EdgeInfo> results;
+    if (!initialized_ || !pool_) return results;
+
+    auto conn = pool_->acquire();
+    if (!conn) return results;
+
+    Statement stmt(conn->dbc());
+    std::string sql =
+        "SELECT from_node_id, to_node_id, weight FROM GraphEdges "
+        "WHERE from_node_id = ? OR to_node_id = ?";
+
+    if (!stmt.prepare(sql)) {
+        pool_->release(std::move(conn));
+        return results;
+    }
+
+    int64_t id_val = static_cast<int64_t>(node_id);
+    SQLLEN ind = 0;
+    SQLBindParameter(stmt.stmt(), 1, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &id_val, 0, &ind);
+    SQLBindParameter(stmt.stmt(), 2, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &id_val, 0, &ind);
+
+    if (!stmt.execute()) {
+        pool_->release(std::move(conn));
+        return results;
+    }
+
+    while (stmt.fetch()) {
+        EdgeInfo edge;
+        edge.from_id = static_cast<uint64_t>(stmt.get_int64(1).value_or(0));
+        edge.to_id = static_cast<uint64_t>(stmt.get_int64(2).value_or(0));
+        edge.weight = stmt.get_float(3).value_or(0.0f);
+        results.push_back(edge);
+    }
+
+    pool_->release(std::move(conn));
+    return results;
+}
+
+int64_t MSSQLVectorAdapter::count_edges() const {
+    if (!initialized_ || !pool_) return 0;
+
+    auto conn = pool_->acquire();
+    if (!conn) return 0;
+
+    Statement stmt(conn->dbc());
+    std::string sql = "SELECT COUNT(*) FROM GraphEdges";
+
+    if (!stmt.prepare(sql) || !stmt.execute() || !stmt.fetch()) {
+        pool_->release(std::move(conn));
+        return 0;
+    }
+
+    auto count = stmt.get_int64(1);
+    pool_->release(std::move(conn));
+    return count.value_or(0);
+}
+
+// ============================================================================
+// MERGE/UPSERT Edge
+// ============================================================================
+
+bool MSSQLVectorAdapter::add_graph_edge_or_update(uint64_t from_id, uint64_t to_id,
+                                                   const std::string& edge_type, float weight) {
+    if (!initialized_ || !pool_) return false;
+
+    auto conn = pool_->acquire();
+    if (!conn) return false;
+
+    Statement stmt(conn->dbc());
+    std::string sql =
+        "MERGE GraphEdges AS target "
+        "USING (SELECT ? AS from_node_id, ? AS to_node_id, ? AS edge_type) AS source "
+        "ON target.from_node_id = source.from_node_id "
+        "AND target.to_node_id = source.to_node_id "
+        "AND target.edge_type = source.edge_type "
+        "WHEN MATCHED THEN "
+        "    UPDATE SET target.weight = ? "
+        "WHEN NOT MATCHED THEN "
+        "    INSERT (from_node_id, to_node_id, edge_type, weight, created_at) "
+        "    VALUES (?, ?, ?, ?, GETUTCDATE());";
+
+    if (!stmt.prepare(sql)) {
+        pool_->release(std::move(conn));
+        return false;
+    }
+
+    int64_t fid = static_cast<int64_t>(from_id);
+    int64_t tid = static_cast<int64_t>(to_id);
+    SQLLEN fid_ind = 0, tid_ind = 0, weight_ind = 0;
+    SQLLEN type_ind = static_cast<SQLLEN>(edge_type.size());
+
+    // source from_node_id
+    SQLBindParameter(stmt.stmt(), 1, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &fid, 0, &fid_ind);
+    // source to_node_id
+    SQLBindParameter(stmt.stmt(), 2, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &tid, 0, &tid_ind);
+    // source edge_type
+    SQLBindParameter(stmt.stmt(), 3, SQL_PARAM_INPUT,
+                     SQL_C_CHAR, SQL_VARCHAR, static_cast<SQLULEN>(edge_type.size()), 0,
+                     const_cast<char*>(edge_type.c_str()), static_cast<SQLLEN>(edge_type.size()), &type_ind);
+    // MATCHED update weight
+    SQLBindParameter(stmt.stmt(), 4, SQL_PARAM_INPUT,
+                     SQL_C_FLOAT, SQL_REAL, 0, 0, &weight, 0, &weight_ind);
+    // NOT MATCHED INSERT from_node_id
+    SQLBindParameter(stmt.stmt(), 5, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &fid, 0, &fid_ind);
+    // NOT MATCHED INSERT to_node_id
+    SQLBindParameter(stmt.stmt(), 6, SQL_PARAM_INPUT,
+                     SQL_C_SBIGINT, SQL_BIGINT, 0, 0, &tid, 0, &tid_ind);
+    // NOT MATCHED INSERT edge_type
+    SQLBindParameter(stmt.stmt(), 7, SQL_PARAM_INPUT,
+                     SQL_C_CHAR, SQL_VARCHAR, static_cast<SQLULEN>(edge_type.size()), 0,
+                     const_cast<char*>(edge_type.c_str()), static_cast<SQLLEN>(edge_type.size()), &type_ind);
+    // NOT MATCHED INSERT weight
+    SQLBindParameter(stmt.stmt(), 8, SQL_PARAM_INPUT,
+                     SQL_C_FLOAT, SQL_REAL, 0, 0, &weight, 0, &weight_ind);
+
+    bool ok = stmt.execute();
+    pool_->release(std::move(conn));
+    return ok;
+}
+
 } // namespace neural::mssql
