@@ -253,8 +253,8 @@ class NeuralMemoryProvider(MemoryProvider):
                 except Exception as e:
                     logger.warning("C++ dream backend failed, falling back: %s", e)
 
-            # SQLite fallback
-            db_path = str(Path.home() / ".neural_memory" / "dream.db")
+            # SQLite fallback — use memory.db which has all tables (memories, connections, dream_*)
+            db_path = self._config.get("db_path", str(Path.home() / ".neural_memory" / "memory.db"))
             self._dream = DreamEngine.sqlite(
                 db_path,
                 neural_memory=self._memory,
@@ -356,20 +356,32 @@ class NeuralMemoryProvider(MemoryProvider):
         """Fire a background recall for the next turn."""
         if not self._memory or not query:
             return
-        limit = self._config.get("prefetch_limit", 5) if self._config else 5
+        limit = self._config.get("prefetch_limit", 3) if self._config else 3
 
         def _run():
             try:
-                results = self._memory.recall(query, k=limit)
+                results = self._memory.recall(query, k=limit * 2)  # Over-fetch, then filter
                 if not results:
                     return
                 lines = []
                 for r in results:
                     sim = r.get("similarity", 0)
+                    if sim < 0.5:
+                        continue  # Skip low-quality matches
                     content = r.get("content", "")
-                    lines.append(f"- [{sim:.2f}] {content[:200]}")
-                with self._lock:
-                    self._prefetch_result = "\n".join(lines)
+                    # Skip meta/debug content
+                    content_lower = content.lower()
+                    if any(skip in content_lower for skip in (
+                        "neural memory", "tool_result", "test_suite", "mssql",
+                        "config.yaml", "odbc", "embedding", "connection string",
+                    )):
+                        continue
+                    lines.append(f"- [{sim:.2f}] {content[:150]}")
+                    if len(lines) >= limit:
+                        break
+                if lines:
+                    with self._lock:
+                        self._prefetch_result = "\n".join(lines)
             except Exception as e:
                 logger.debug("Neural prefetch failed: %s", e)
 
