@@ -390,6 +390,18 @@ class NeuralMemoryProvider(MemoryProvider):
         "as mentioned in my",
         "according to my memory",
         "i recall from",
+        "neural memory",
+        "neural_recall",
+        "neural_remember",
+        "does neural memory work",
+        "tool_result",
+        "test_suite",
+        "config.yaml",
+        "mssql",
+        "sqlite",
+        "embedding",
+        "connection string",
+        "odbc",
     )
 
     def _is_garbage(self, text: str) -> bool:
