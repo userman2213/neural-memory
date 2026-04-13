@@ -205,6 +205,36 @@ class MSSQLStore:
         cc = cursor.fetchone()[0]
         return {'memories': mc, 'connections': cc}
     
+    def recall(self, query_embedding: list[float], k: int = 5) -> list[dict]:
+        """Cosine similarity search against all memories in MSSQL."""
+        import math
+        all_mems = self.get_all()
+        if not all_mems:
+            return []
+        
+        def cosine(a, b):
+            dot = sum(x*y for x,y in zip(a,b))
+            na = math.sqrt(sum(x*x for x in a))
+            nb = math.sqrt(sum(x*x for x in b))
+            if na == 0 or nb == 0:
+                return 0.0
+            return dot / (na * nb)
+        
+        scored = []
+        for mem in all_mems:
+            if not mem['embedding']:
+                continue
+            sim = cosine(query_embedding, mem['embedding'])
+            scored.append({
+                'id': mem['id'],
+                'label': mem['label'],
+                'content': mem['content'],
+                'similarity': sim,
+            })
+        
+        scored.sort(key=lambda x: -x['similarity'])
+        return scored[:k]
+
     def close(self):
         self.conn.close()
 

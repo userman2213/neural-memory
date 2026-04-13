@@ -43,55 +43,48 @@ class Memory:
     """
     Unified Neural Memory interface.
     
-    Auto-detects best available backend:
-    1. C++ + MSSQL (primary — production)
-    2. C++ + SQLite (fallback — local dev)
-    3. Pure Python (last resort)
+    Backend priority:
+    1. MSSQL (via pyodbc) — when MSSQL is installed and running
+    2. SQLite (via Python) — fallback when MSSQL unavailable
     """
     
     def __init__(self, 
                  db_path: Optional[str] = None,
                  embedding_backend: str = "auto",
                  use_cpp: bool = True,
-                 use_mssql: Optional[bool] = None,  # None = auto-detect
+                 use_mssql: Optional[bool] = None,
                  default_chunk_size: int = 512):
         
         Path.home().joinpath(".neural_memory").mkdir(parents=True, exist_ok=True)
         
         self._db_path = db_path or str(Path.home() / ".neural_memory" / "memory.db")
-        self._embedding_backend = embedding_backend
         self._default_chunk_size = default_chunk_size
-        self._cpp = None
-        self._python = None
-        self._cpp_mssql = None  # C++ bridge for MSSQL ops
+        self._mssql_store = None
+        self._sqlite_memory = None
         
-        # Auto-detect MSSQL: check env vars
-        if use_mssql is None:
-            use_mssql = bool(use_cpp and os.environ.get("MSSQL_SERVER") and os.environ.get("MSSQL_PASSWORD"))
-        self._use_mssql = use_mssql and HAS_MSSQL
-        
-        # Create NeuralMemory backend (embedding + SQLite store)
-        self._python = NeuralMemory(db_path=self._db_path, embedding_backend=embedding_backend)
-        self._embedder = self._python.embedder
-        self._cpp = None  # C++ in-memory is handled by _cpp_mssql when MSSQL active
-        
-        # If MSSQL is active, also init C++ bridge for MSSQL ops
-        if self._use_mssql:
-            try:
-                from cpp_bridge import NeuralMemoryCpp
-                self._cpp_mssql = NeuralMemoryCpp()
-                self._cpp_mssql.initialize(dim=self._embedder.dim)
-                backend_name = "C++ MSSQL"
-            except Exception as e:
-                print(f"[neural] MSSQL C++ bridge failed: {e}, falling back to SQLite")
-                self._use_mssql = False
-                backend_name = "C++ SQLite"
-        else:
-            backend_name = "C++ SIMD" if self._cpp else "Python"
-        
-        print(f"[neural] {backend_name} backend: {self._embedder.backend.__class__.__name__}")
-        
+        # Embedder (shared regardless of backend)
+        from embed_provider import EmbeddingProvider
+        self._embedder = EmbeddingProvider(backend=embedding_backend)
         self._dim = self._embedder.dim
+        
+        # Auto-detect MSSQL
+        if use_mssql is None:
+            use_mssql = bool(os.environ.get("MSSQL_SERVER") and os.environ.get("MSSQL_PASSWORD"))
+        
+        # Try MSSQL first
+        if use_mssql:
+            try:
+                from mssql_store import MSSQLStore
+                self._mssql_store = MSSQLStore()
+                print(f"[neural] MSSQL backend: {self._embedder.backend.__class__.__name__} ({self._dim}d)")
+                return  # MSSQL is primary — done
+            except Exception as e:
+                print(f"[neural] MSSQL unavailable ({e}), falling back to SQLite")
+        
+        # SQLite fallback
+        from memory_client import NeuralMemory
+        self._sqlite_memory = NeuralMemory(db_path=self._db_path, embedding_backend=embedding_backend)
+        print(f"[neural] SQLite backend: {self._embedder.backend.__class__.__name__} ({self._dim}d)")
     
     @staticmethod
     def chunk_text(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
@@ -192,178 +185,136 @@ class Memory:
     
     def remember(self, text: str, label: str = "", auto_chunk: bool = True,
                  auto_connect: bool = True, detect_conflicts: bool = True) -> int | list[int]:
-        """
-        Store a memory from text.
-        Returns memory ID (or list of IDs if auto-chunked).
-        
-        Args:
-            text: Memory content
-            label: Optional label
-            auto_chunk: If True, automatically chunk text longer than
-                        chunk_size * 2 (default True)
-            auto_connect: If True, connect similar memories in graph (default True).
-                          Set False for fast bulk ingestion.
-            detect_conflicts: If True, check for contradictory memories (default True).
-                              Set False for benchmarks.
-        """
+        """Store a memory. Returns memory ID."""
         if auto_chunk and len(text) > self._default_chunk_size * 2:
             return self.remember_chunked(text, label)
         
         embedding = self._embedder.embed(text)
         
-        # Primary store: C++ → MSSQL if active, otherwise C++ → SQLite
-        if self._cpp_mssql:
-            mid = self._cpp_mssql.store_mssql(embedding, label or text[:60], text)
-        elif self._cpp:
-            mid = self._cpp.store(embedding, label or text[:60], text)
+        if self._mssql_store:
+            return self._mssql_store.store(label or text[:60], text, embedding)
         else:
-            mid = self._python.remember(text, label, auto_connect=auto_connect,
-                                        detect_conflicts=detect_conflicts)
-        
-        return mid
+            return self._sqlite_memory.remember(text, label, auto_connect=auto_connect,
+                                                detect_conflicts=detect_conflicts)
     
     def remember_embedding(self, embedding: list[float], label: str = "", 
                            content: str = "") -> int:
         """Store a memory with pre-computed embedding."""
-        if self._cpp_mssql:
-            return self._cpp_mssql.store_mssql(embedding, label, content)
-        elif self._cpp:
-            return self._cpp.store(embedding, label, content)
+        if self._mssql_store:
+            return self._mssql_store.store(label or content[:60], content, embedding)
         else:
-            mid = self._python.store.store(label or content[:60], content, embedding)
-            # Update in-memory graph
-            self._python._graph_nodes[mid] = {
-                'embedding': embedding,
-                'label': label or content[:60],
-                'connections': {}
-            }
-            # Auto-connect
-            for other_id, other_node in self._python._graph_nodes.items():
-                if other_id == mid:
-                    continue
-                sim = NeuralMemory._cosine_similarity(embedding, other_node['embedding'])
-                if sim > 0.15:
-                    self._python._graph_nodes[mid]['connections'][other_id] = sim
-                    self._python._graph_nodes[other_id]['connections'][mid] = sim
-                    self._python.store.add_connection(mid, other_id, sim)
-            return mid
+            return self._sqlite_memory.store.store(label or content[:60], content, embedding)
     
     def recall(self, query: str, k: int = 5) -> list[dict]:
-        """
-        Retrieve memories related to query text.
-        Returns list of {id, label, content, similarity, connections}.
+        """Semantic search. Returns [{id, label, content, similarity}]."""
+        embedding = self._embedder.embed(query)
         
-        Always uses Python/SQLite for semantic search — the C++ bridge's
-        in-memory index doesn't load existing MSSQL data on init, so
-        C++ retrieve() returns empty for previously stored memories.
-        MSSQL C++ bridge handles graph edges and writes only.
-        """
-        return self._python.recall(query, k)
+        if self._mssql_store:
+            results = self._mssql_store.recall(embedding, k)
+            # Strip embeddings, add connections
+            for r in results:
+                r.pop('embedding', None)
+                conns = self._mssql_store.get_connections(r['id'])
+                r['connections'] = [{'id': c['target'] if c['source'] == r['id'] else c['source'],
+                                     'weight': c['weight']} for c in conns[:3]]
+            return results
+        else:
+            return self._sqlite_memory.recall(query, k)
 
     def recall_multihop(self, query: str, k: int = 5, hops: int = 2) -> list[dict]:
-        """
-        Multi-hop retrieval: cosine similarity + graph-traversal expansion.
-        Returns up to k*2 results re-ranked by combined similarity + activation.
-        """
-        bridge = self._cpp_mssql or self._cpp
-        if bridge:
-            # Base recall
-            results = self.recall(query, k)
-            # Expand via graph traversal
-            expanded = []
-            seen = {r['id'] for r in results}
-            for r in results:
-                edges = bridge.get_edges(r['id'], max_edges=10) if hasattr(bridge, 'get_edges') else []
-                for e in edges:
-                    other = e['to_id'] if e['from_id'] == r['id'] else e['from_id']
-                    if other not in seen:
-                        seen.add(other)
-                        expanded.append({'id': other, 'activation': e['weight']})
-            # Re-rank: combine similarity + activation
-            return results[:k]
-        return self._python.recall_multihop(query, k=k, hops=hops)
+        """Multi-hop retrieval: cosine similarity + graph expansion."""
+        results = self.recall(query, k)
+        if not self._mssql_store:
+            return results
+        
+        expanded = []
+        seen = {r['id'] for r in results}
+        for r in results:
+            conns = self._mssql_store.get_connections(r['id'])
+            for c in conns:
+                other = c['target'] if c['source'] == r['id'] else c['source']
+                if other not in seen:
+                    seen.add(other)
+                    mem = self._mssql_store.get(other)
+                    if mem:
+                        expanded.append({'id': other, 'label': mem['label'],
+                                        'content': mem['content'], 'activation': c['weight']})
+        return results[:k]
 
     def think(self, start_id: int, depth: int = 3, decay: float = 0.85) -> list[dict]:
-        """
-        Spreading activation from a starting memory.
-        Returns activated memories sorted by activation.
-        
-        Uses Python/SQLite path — C++ bridge in-memory index is empty.
-        """
-        return self._python.think(start_id, depth, decay)
+        """Spreading activation from a starting memory."""
+        if self._mssql_store:
+            visited = {start_id}
+            frontier = [start_id]
+            results = []
+            current_decay = decay
+            
+            for _ in range(depth):
+                next_frontier = []
+                for nid in frontier:
+                    conns = self._mssql_store.get_connections(nid)
+                    for c in conns:
+                        other = c['target'] if c['source'] == nid else c['source']
+                        if other not in visited:
+                            visited.add(other)
+                            activation = c['weight'] * current_decay
+                            mem = self._mssql_store.get(other)
+                            results.append({
+                                'id': other,
+                                'label': mem['label'] if mem else f'node_{other}',
+                                'activation': round(activation, 4),
+                            })
+                            next_frontier.append(other)
+                frontier = next_frontier
+                current_decay *= decay
+            
+            results.sort(key=lambda x: -x['activation'])
+            return results[:20]
+        else:
+            return self._sqlite_memory.think(start_id, depth, decay)
     
     def connections(self, mem_id: int) -> list[dict]:
-        """Get connections for a memory.
-        
-        Priority: C++ MSSQL > Python
-        """
-        if self._cpp_mssql:
-            return self._cpp_mssql.get_edges(mem_id)
-        if self._cpp and hasattr(self._cpp, 'get_edges'):
-            return self._cpp.get_edges(mem_id)
-        if self._python:
-            return self._python.connections(mem_id)
-        return []
+        """Get connections for a memory."""
+        if self._mssql_store:
+            return self._mssql_store.get_connections(mem_id)
+        return self._sqlite_memory.connections(mem_id) if self._sqlite_memory else []
     
     def graph(self) -> dict:
-        """Get knowledge graph stats.
-        
-        Uses Python/SQLite for memory data, merges MSSQL edge counts if available.
-        """
-        g = self._python.graph()
-        if self._cpp_mssql:
-            try:
-                g['edges'] = self._cpp_mssql.count_edges()
-                g['backend'] = 'mssql+sqlite'
-            except Exception:
-                pass
-        return g
+        """Knowledge graph stats."""
+        if self._mssql_store:
+            s = self._mssql_store.stats()
+            return {
+                'nodes': s['memories'],
+                'edges': s['connections'],
+                'backend': 'mssql',
+            }
+        return self._sqlite_memory.graph()
     
     def consolidate(self) -> int:
-        """Run memory consolidation.
-        
-        Priority: C++ MSSQL > C++ SQLite
-        """
-        bridge = self._cpp_mssql or self._cpp
-        if bridge:
-            return bridge.consolidate()
-        return 0
+        """Run memory consolidation."""
+        return 0  # TODO: implement MSSQL consolidation
     
     def stats(self) -> dict:
-        """Get system statistics.
+        """System statistics."""
+        if self._mssql_store:
+            s = self._mssql_store.stats()
+            s['embedding_dim'] = self._dim
+            s['embedding_backend'] = self._embedder.backend.__class__.__name__
+            s['backend'] = 'mssql'
+            return s
         
-        Merges Python/SQLite memory counts with MSSQL graph edge counts
-        when C++ MSSQL bridge is active.
-        """
-        s = self._python.stats()
-        
-        # If MSSQL bridge is active, get graph edge count from it
-        if self._cpp_mssql:
-            try:
-                mssql_stats = self._cpp_mssql.get_stats()
-                s['graph_edges'] = mssql_stats.get('graph_edges', 0)
-                s['graph_nodes'] = mssql_stats.get('graph_nodes', 0)
-                s['backend'] = 'mssql+sqlite'
-            except Exception:
-                s['backend'] = 'python'
-        elif self._cpp:
-            s['backend'] = 'cpp'
-        else:
-            s['backend'] = 'python'
-        
+        s = self._sqlite_memory.stats()
+        s['backend'] = 'sqlite'
         return s
     
     def close(self):
         """Clean shutdown."""
-        if self._cpp_mssql:
-            self._cpp_mssql.shutdown()
-            self._cpp_mssql = None
-        if self._cpp:
-            self._cpp.shutdown()
-            self._cpp = None
-        if self._python:
-            self._python.close()
-            self._python = None
+        if self._mssql_store:
+            self._mssql_store.close()
+            self._mssql_store = None
+        if self._sqlite_memory:
+            self._sqlite_memory.close()
+            self._sqlite_memory = None
     
     @property
     def dim(self) -> int:
@@ -371,8 +322,8 @@ class Memory:
     
     @property
     def backend(self) -> str:
-        if self._cpp:
-            return "cpp"
+        if self._mssql_store:
+            return "mssql"
         return self._embedder.backend.__class__.__name__
     
     def __enter__(self):
