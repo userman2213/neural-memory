@@ -356,7 +356,7 @@ class NeuralMemoryProvider(MemoryProvider):
         """Fire a background recall for the next turn."""
         if not self._memory or not query:
             return
-        limit = self._config.get("prefetch_limit", 3) if self._config else 3
+        limit = min(self._config.get("prefetch_limit", 3), 3) if self._config else 3
 
         def _run():
             try:
