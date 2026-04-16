@@ -3,25 +3,98 @@
 generate.py - Generate interactive Neural Memory dashboard HTML.
 
 Reads from SQLite (default) or MSSQL and produces a self-contained
-interactive HTML file with Plotly visualizations.
+interactive HTML file with 3D force graph + Plotly visualizations.
 
 Usage:
     python generate.py                          # SQLite, output ~/neural_memory_dashboard.html
     python generate.py --mssql                  # MSSQL (NeuralMemory DB)
     python generate.py --db /path/to/memory.db  # Custom SQLite path
     python generate.py -o /tmp/dashboard.html   # Custom output path
+    python generate.py --serve                  # Generate + serve via HTTPS (auto-cert)
+    python generate.py --serve --port 8443      # Custom port
 """
 import argparse
 import json
 import os
 import sqlite3
-import struct
 import sys
+import hashlib
 from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import ssl
+import tempfile
+import subprocess
 
 EMBEDDING_DIM = 384
 DEFAULT_SQLITE = os.path.expanduser("~/.neural_memory/memory.db")
 TEMPLATE_PATH = Path(__file__).parent / "template.html"
+LIB_CACHE = Path(__file__).parent / ".lib_cache"
+
+# Library versions and URLs
+PLOTLY_VERSION = "2.27.0"
+PLOTLY_URL = f"https://cdn.plot.ly/plotly-{PLOTLY_VERSION}.min.js"
+THREEJS_VERSION = "0.160.0"
+THREEJS_URL = f"https://cdn.jsdelivr.net/npm/three@{THREEJS_VERSION}/build/three.min.js"
+FORCEGRAPH_URL = "https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"
+
+
+def _download_js(url: str, cache_file: Path, label: str, min_size: int = 100_000) -> str:
+    """Download a JS library to local cache. Returns JS content or None on failure."""
+    if cache_file.exists() and cache_file.stat().st_size > min_size:
+        return cache_file.read_text()
+
+    LIB_CACHE.mkdir(parents=True, exist_ok=True)
+    print(f"  Downloading {label} (one-time)...")
+
+    import urllib.request
+    js = None
+
+    # Try urllib first
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={"User-Agent": "neural-memory-dashboard/3.0"})
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            js = resp.read().decode("utf-8")
+    except Exception:
+        pass
+
+    # Fallback: curl
+    if not js or len(js) < min_size:
+        try:
+            result = subprocess.run(
+                ["curl", "-sSL", "--insecure", url],
+                capture_output=True, text=True, timeout=60
+            )
+            js = result.stdout
+        except Exception as e:
+            print(f"  WARNING: Could not download {label} ({e}). Will use CDN fallback.")
+            return None
+
+    if not js or len(js) < min_size:
+        print(f"  WARNING: {label} download too small ({len(js) if js else 0} bytes). CDN fallback.")
+        return None
+
+    cache_file.write_text(js)
+    print(f"    Cached: {cache_file} ({len(js) // 1024} KB)")
+    return js
+
+
+def ensure_libraries() -> dict:
+    """Download all required JS libraries. Returns {name: js_content_or_none}."""
+    libs = {}
+
+    plotly_cache = LIB_CACHE / f"plotly-{PLOTLY_VERSION}.min.js"
+    libs["plotly"] = _download_js(PLOTLY_URL, plotly_cache, f"Plotly {PLOTLY_VERSION}", 1_000_000)
+
+    threejs_cache = LIB_CACHE / f"three-{THREEJS_VERSION}.min.js"
+    libs["threejs"] = _download_js(THREEJS_URL, threejs_cache, f"Three.js {THREEJS_VERSION}", 300_000)
+
+    forcegraph_cache = LIB_CACHE / "3d-force-graph.min.js"
+    libs["forcegraph"] = _download_js(FORCEGRAPH_URL, forcegraph_cache, "3d-force-graph", 50_000)
+
+    return libs
 
 
 def read_sqlite(db_path: str) -> dict:
@@ -29,7 +102,7 @@ def read_sqlite(db_path: str) -> dict:
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    # Memories with category + degree
+    # All memories with category + degree
     cur.execute("""
         SELECT m.id, m.label, m.content, m.salience, m.access_count,
                COALESCE(out_d.out_degree, 0) AS out_degree,
@@ -47,7 +120,7 @@ def read_sqlite(db_path: str) -> dict:
         label = r[1] or ""
         nodes.append({
             "id": r[0],
-            "label": label[:40],
+            "label": label[:50],
             "category": _categorize(label),
             "content_length": len(r[2]) if r[2] else 0,
             "salience": r[3] or 1.0,
@@ -58,8 +131,8 @@ def read_sqlite(db_path: str) -> dict:
             "avg_weight": round(r[7], 4),
         })
 
-    # Top 50 hub nodes for network graph
-    hub_ids = [n["id"] for n in nodes[:50]]
+    # Top nodes for graph (more for 3D — it handles scale better)
+    hub_ids = [n["id"] for n in nodes[:120]]
     id_set = set(hub_ids)
 
     # Connections between hubs
@@ -142,7 +215,6 @@ def read_mssql(server="localhost", database="NeuralMemory",
     conn = pyodbc.connect(conn_str, autocommit=True)
     cur = conn.cursor()
 
-    # Top nodes by degree
     cur.execute("""
         SELECT TOP 200 m.id, m.label, LEN(ISNULL(m.content,'')) AS clen,
                m.salience, m.access_count,
@@ -159,14 +231,14 @@ def read_mssql(server="localhost", database="NeuralMemory",
     for r in cur.fetchall():
         label = r[1] or ""
         nodes.append({
-            "id": r[0], "label": label[:40], "category": _categorize(label),
+            "id": r[0], "label": label[:50], "category": _categorize(label),
             "content_length": r[2] or 0, "salience": r[3] or 1.0,
             "access_count": r[4] or 0, "out_degree": r[5],
             "in_degree": r[6], "total_degree": r[5] + r[6],
             "avg_weight": round(r[7], 4),
         })
 
-    hub_ids = [n["id"] for n in nodes[:50]]
+    hub_ids = [n["id"] for n in nodes[:120]]
     id_set = set(hub_ids)
 
     id_list = ",".join(str(x) for x in hub_ids)
@@ -229,16 +301,103 @@ def _categorize(label: str) -> str:
     return "Other"
 
 
+def generate_self_signed_cert(cert_path: str, key_path: str):
+    """Generate a self-signed TLS certificate using openssl."""
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        import time
+        age_days = (time.time() - os.path.getmtime(cert_path)) / 86400
+        if age_days < 360:
+            return
+
+    print("Generating self-signed TLS certificate...")
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "ec",
+        "-pkeyopt", "ec_paramgen_curve:prime256v1",
+        "-keyout", key_path, "-out", cert_path,
+        "-days", "3650", "-nodes",
+        "-subj", "/CN=neural-memory-dashboard/O=NeuralMemory/C=DE",
+        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:0.0.0.0",
+    ], capture_output=True, check=True)
+    print(f"  Certificate: {cert_path}")
+    print(f"  Key: {key_path}")
+
+
 def generate_html(data: dict, output_path: str):
-    """Read template and inject data."""
+    """Read template, embed JS libraries locally, and inject data."""
     template = TEMPLATE_PATH.read_text()
-    html = template.replace("__DATA_JSON__", json.dumps(data))
+
+    libs = ensure_libraries()
+
+    # Embed Plotly
+    if libs["plotly"]:
+        plotly_tag = f"<script>{libs['plotly']}</script>"
+    else:
+        plotly_tag = f'<script src="https://cdn.plot.ly/plotly-{PLOTLY_VERSION}.min.js"></script>'
+
+    # Embed Three.js
+    if libs["threejs"]:
+        threejs_tag = f"<script>{libs['threejs']}</script>"
+    else:
+        threejs_tag = f'<script src="https://cdn.jsdelivr.net/npm/three@{THREEJS_VERSION}/build/three.min.js"></script>'
+
+    # Embed 3d-force-graph
+    if libs["forcegraph"]:
+        forcegraph_tag = f"<script>{libs['forcegraph']}</script>"
+    else:
+        forcegraph_tag = '<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>'
+
+    html = template.replace("__PLOTLY_SCRIPT__", plotly_tag)
+    html = html.replace("__THREEJS_SCRIPT__", threejs_tag)
+    html = html.replace("__FORCEGRAPH_SCRIPT__", forcegraph_tag)
+    html = html.replace("__DATA_JSON__", json.dumps(data))
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(html)
     size_kb = len(html) // 1024
     print(f"Dashboard: {output_path} ({size_kb} KB)")
     print(f"  {data['stats']['memories']} memories, {data['stats']['connections']} connections")
     print(f"  Source: {data['stats']['source']} ({data['stats']['path']})")
+    embedded = [k for k, v in libs.items() if v]
+    cdn = [k for k, v in libs.items() if not v]
+    print(f"  Embedded: {', '.join(embedded) if embedded else 'none'}")
+    if cdn:
+        print(f"  CDN fallback: {', '.join(cdn)}")
+
+
+def serve_https(output_path: str, port: int):
+    """Serve the dashboard via HTTPS with auto-generated self-signed cert."""
+    cert_dir = Path(__file__).parent / ".certs"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    cert_file = str(cert_dir / "dashboard.crt")
+    key_file = str(cert_dir / "dashboard.key")
+
+    generate_self_signed_cert(cert_file, key_file)
+
+    os.chdir(os.path.dirname(output_path) or ".")
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("0.0.0.0", port), QuietHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_file, key_file)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    print(f"\n{'='*60}")
+    print(f"  Neural Memory Dashboard — HTTPS")
+    print(f"  https://localhost:{port}/{os.path.basename(output_path)}")
+    print(f"  https://<your-ip>:{port}/{os.path.basename(output_path)}")
+    print(f"")
+    print(f"  Certificate: auto-generated self-signed (EC P-256)")
+    print(f"  Browser will show 'Not Secure' — click Advanced → Proceed")
+    print(f"  Press Ctrl+C to stop")
+    print(f"{'='*60}\n")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
 
 
 def main():
@@ -250,6 +409,8 @@ def main():
     parser.add_argument("--mssql-username", default="SA")
     parser.add_argument("--mssql-password", default=None, help="Or set MSSQL_PASSWORD env var")
     parser.add_argument("-o", "--output", default=os.path.expanduser("~/neural_memory_dashboard.html"))
+    parser.add_argument("--serve", action="store_true", help="Serve via HTTPS after generating")
+    parser.add_argument("--port", type=int, default=8443, help="HTTPS port (default: 8443)")
     args = parser.parse_args()
 
     if args.mssql:
@@ -262,6 +423,9 @@ def main():
         data = read_sqlite(args.db)
 
     generate_html(data, args.output)
+
+    if args.serve:
+        serve_https(args.output, args.port)
 
 
 if __name__ == "__main__":
