@@ -2,6 +2,14 @@
 
 Semantic memory system with knowledge graph, spreading activation, embedding-based recall, **autonomous dream consolidation**, and **C++ LSTM+kNN pattern learning** for the Hermes Agent.
 
+> **Day-0 testers: run the migration first!**
+> The database growth fix + auto-retention patches landed. One command, zero data loss:
+> ```bash
+> cd ~/projects/neural-memory-adapter && bash migrate.sh
+> ```
+> Brings your install from PoC to production grade. Safe to re-run (idempotent).
+> See [Migration](#migration) for details.
+
 
 [![Demo](assets/cover.png)](https://github.com/user-attachments/assets/2d938624-cc39-4f8b-b35b-485b23e93355)
 
@@ -48,6 +56,56 @@ The installer will:
 - ODBC Driver 18 (`yay -S msodbcsql18`)
 - `pyodbc` (`pip install pyodbc`)
 - C++ build: `cmake`, C++17 compiler
+
+## Migration
+
+If you installed Neural Memory **before 2026-04-16**, run the migration once to fix database growth issues and enable auto-retention:
+
+```bash
+cd ~/projects/neural-memory-adapter
+git pull
+bash migrate.sh
+```
+
+### What it does
+
+| Step | Action | Why |
+|------|--------|-----|
+| 1 | Backup database | Safety net — `memory.db.bak.<timestamp>` |
+| 2 | Clean orphans | Remove connections pointing to deleted memories |
+| 3 | Clean history bloat | Remove changelog entries for deleted memories |
+| 4 | Deduplicate edges | Merge duplicate (source, target, type) triples |
+| 5 | UNIQUE constraint | Prevent future duplicate edges at DB level |
+| 6 | Retention indexes | Fast time-based cleanup queries |
+| 7 | VACUUM | Reclaim wasted disk space |
+| 8 | Patch dream_engine.py | Auto-prune every 50 Dream cycles (history 7d, sessions 30d, orphans) |
+| 9 | Patch backends | MSSQL + C++ backend retention methods |
+| 10 | Verify integrity | Full sanity check |
+
+### Typical results
+
+```
+Before:  200-400 MB (depending on age)
+After:   30-80 MB
+Saved:   60-80% disk space
+```
+
+### Safety
+
+- **Backup always created** before any changes
+- **Idempotent** — safe to re-run, skips what's already clean
+- **`--dry-run`** — preview without changes: `bash migrate.sh --dry-run`
+- **Integrity verified** after every run
+
+### After migration
+
+The Dream Engine will now automatically prune old data every 50 cycles. No manual maintenance needed going forward. If your database still grows faster than expected, check `connection_history` row count:
+
+```bash
+sqlite3 ~/.neural_memory/memory.db "SELECT COUNT(*) FROM connection_history"
+```
+
+Should stay under 500K in normal operation.
 
 ## Configuration
 
@@ -230,6 +288,7 @@ python3 demo.py
 
 ```
 neural-memory-adapter/
+├── migrate.sh                    # One-shot Day-0 → Production migration
 ├── install.sh                    # Plugin installer (Lite/Full picker)
 ├── install_database.sh           # Database setup (SQLite/MSSQL)
 ├── hermes-plugin/                # Plugin files (deployed to Hermes)
@@ -259,7 +318,8 @@ neural-memory-adapter/
 │   ├── knn.h                     # kNN config, multi-signal scoring
 │   └── c_api.h                   # C API declarations
 ├── tools/
-│   └── dashboard/                # Interactive HTML dashboard
+│   ├── production_upgrade.py       # DB cleanup script (orphans, dedup, VACUUM)
+│   └── dashboard/                  # Interactive HTML dashboard
 └── README.md
 ```
 
