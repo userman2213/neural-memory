@@ -14,37 +14,59 @@ from pathlib import Path
 CACHE_DIR = Path.home() / ".neural_memory"
 CACHE_FILE = CACHE_DIR / "embed_cache.pkl"
 MODEL_DIR = CACHE_DIR / "models"
-DIMENSION = 1024  # BAAI/bge-m3 output dim (configurable via EMBED_MODEL env var)
+DIMENSION = 384  # all-MiniLM-L6-v2 output dim
 
 # ============================================================================
 # Embedding backends
 # ============================================================================
 
 class SentenceTransformerBackend:
-    """Uses sentence-transformers (BAAI/bge-m3, 1024d, ~2.2GB)
+    """Uses sentence-transformers (default: BAAI/bge-large-en-v1.5, 1024d)
     
     Singleton: model loaded once and shared across all instances.
     Cached locally at ~/.neural_memory/models/.
-    Configurable via EMBED_MODEL env var (e.g. EMBED_MODEL=all-MiniLM-L6-v2 for 384d fallback).
+    
+    SMART EJECT: After EMBED_IDLE_TIMEOUT seconds of inactivity, model moves
+    to CPU to free GPU memory. Automatically reloads on next embed() call.
+    
+    Env vars:
+      EMBED_MODEL — override model name (default: BAAI/bge-m3)
+      EMBED_IDLE_TIMEOUT — seconds before eject to CPU (default: 300, 0=disabled)
+      EMBED_DEVICE — force device (cuda/cpu/mps, default: auto)
     """
-    MODEL_NAME = os.environ.get('EMBED_MODEL', 'BAAI/bge-m3')
+    MODEL_NAME = os.environ.get('EMBED_MODEL', os.environ.get('SENTENCE_TRANSFORMER_MODEL', 'BAAI/bge-m3'))
+    IDLE_TIMEOUT = int(os.environ.get('EMBED_IDLE_TIMEOUT', '300'))
+    FORCED_DEVICE = os.environ.get('EMBED_DEVICE', None)
+    
     _shared_model = None
-    _shared_dim = 1024
+    _shared_dim = None
+    _shared_device = None
+    _last_used = 0.0
+    _eject_timer = None
+    _lock = None  # threading.Lock, lazy init
     
     def __init__(self):
         if SentenceTransformerBackend._shared_model is not None:
             self.model = SentenceTransformerBackend._shared_model
             self.dim = SentenceTransformerBackend._shared_dim
+            SentenceTransformerBackend._touch()
             return
         
         from sentence_transformers import SentenceTransformer
         import torch
+        import threading
+        
+        if SentenceTransformerBackend._lock is None:
+            SentenceTransformerBackend._lock = threading.Lock()
         
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Detect best device (with GPU memory check)
+        # Detect best device: CUDA > MPS (Metal) > CPU
         device = 'cpu'
-        if torch.cuda.is_available():
+        if self.FORCED_DEVICE:
+            device = self.FORCED_DEVICE
+            print(f"[embed] Device forced: {device}")
+        elif torch.cuda.is_available():
             try:
                 gpu_name = torch.cuda.get_device_name(0)
                 props = torch.cuda.get_device_properties(0)
@@ -57,10 +79,15 @@ class SentenceTransformerBackend:
                     print(f"[embed] CUDA: {gpu_name} but only {free_mem:.0f} MB free — using CPU")
             except Exception:
                 print(f"[embed] CUDA detected but memory check failed — using CPU")
+        if device == 'cpu' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            try:
+                device = 'mps'
+                print(f"[embed] Metal (MPS) detected — using Apple Silicon GPU")
+            except Exception:
+                print(f"[embed] MPS detected but failed to initialize — using CPU")
         if device == 'cpu':
-            print(f"[embed] CPU only")
+            print(f"[embed] CPU only (no GPU detected)")
         
-        # Build cache dir name: BAAI/bge-m3 → models--BAAI--bge-m3
         safe_name = self.MODEL_NAME.replace('/', '--')
         cached_model_dir = MODEL_DIR / f"models--{safe_name}"
         is_cached = cached_model_dir.exists()
@@ -68,7 +95,7 @@ class SentenceTransformerBackend:
         if is_cached:
             print(f"[embed] Loading {self.MODEL_NAME} from local cache...")
         else:
-            print(f"[embed] Downloading {self.MODEL_NAME} (~2.2GB) to {MODEL_DIR}...")
+            print(f"[embed] Downloading {self.MODEL_NAME} to {MODEL_DIR}...")
             print("This only happens once. Please wait...", flush=True)
         
         try:
@@ -78,28 +105,137 @@ class SentenceTransformerBackend:
                 device=device,
                 local_files_only=is_cached
             )
-            try:
-                self.dim = self.model.get_embedding_dimension()
-            except AttributeError:
-                self.dim = self.model.get_sentence_embedding_dimension()
+            self.dim = self.model.get_sentence_embedding_dimension()
             SentenceTransformerBackend._shared_model = self.model
             SentenceTransformerBackend._shared_dim = self.dim
+            SentenceTransformerBackend._shared_device = device
             
             if not is_cached:
                 print(f"[embed] Model cached successfully!", flush=True)
             
-            print(f"[embed] {self.MODEL_NAME} ready on {device}")
+            print(f"[embed] {self.MODEL_NAME} ready on {device} ({self.dim}d)")
+            
+            # Start smart eject timer
+            SentenceTransformerBackend._touch()
+            SentenceTransformerBackend._start_eject_timer()
         except Exception as e:
             print(f"[embed] Failed to load model: {e}", file=sys.stderr)
             raise
     
+    @classmethod
+    def _touch(cls):
+        """Update last-used timestamp."""
+        import time
+        cls._last_used = time.time()
+    
+    @classmethod
+    def _start_eject_timer(cls):
+        """Start background timer for smart eject."""
+        import threading
+        if cls.IDLE_TIMEOUT <= 0:
+            return
+        if cls._eject_timer is not None:
+            return  # Already running
+        
+        def _check_idle():
+            import time
+            while True:
+                time.sleep(60)  # Check every 60s
+                if cls._shared_model is None:
+                    continue
+                idle = time.time() - cls._last_used
+                if idle > cls.IDLE_TIMEOUT:
+                    cls._eject_to_cpu()
+        
+        t = threading.Thread(target=_check_idle, daemon=True, name="embed-eject-timer")
+        t.start()
+        cls._eject_timer = t
+        print(f"[embed] Smart eject enabled: {cls.IDLE_TIMEOUT}s idle → CPU")
+    
+    @classmethod
+    def _eject_to_cpu(cls):
+        """Move model from GPU to CPU to free VRAM."""
+        if cls._shared_model is None:
+            return
+        if cls._shared_device == 'cpu':
+            return  # Already on CPU
+        
+        with cls._lock:
+            try:
+                import torch
+                current_device = next(cls._shared_model.parameters()).device
+                if current_device.type == 'cpu':
+                    return  # Already on CPU
+                
+                cls._shared_model.to('cpu')
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(f"[embed] Smart eject: model moved to CPU (freed GPU memory)")
+            except Exception as e:
+                print(f"[embed] Eject failed: {e}", file=sys.stderr)
+    
+    @classmethod
+    def _ensure_on_device(cls):
+        """Move model back to GPU if it was ejected."""
+        if cls._shared_model is None:
+            return
+        if cls._shared_device == 'cpu':
+            return
+        
+        try:
+            import torch
+            current_device = next(cls._shared_model.parameters()).device
+            if current_device.type != 'cpu':
+                return  # Already on correct device
+            
+            # Need to reload to GPU
+            if cls._shared_device == 'cuda' and torch.cuda.is_available():
+                cls._shared_model.to('cuda')
+                print(f"[embed] Model reloaded to CUDA")
+            elif cls._shared_device == 'mps' and hasattr(torch.backends, 'mps'):
+                cls._shared_model.to('mps')
+                print(f"[embed] Model reloaded to MPS")
+        except Exception as e:
+            print(f"[embed] Reload failed: {e}", file=sys.stderr)
+    
     def embed(self, text: str) -> list[float]:
+        SentenceTransformerBackend._touch()
+        SentenceTransformerBackend._ensure_on_device()
         vec = self.model.encode(text, normalize_embeddings=True)
         return vec.tolist()
     
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        SentenceTransformerBackend._touch()
+        SentenceTransformerBackend._ensure_on_device()
         vecs = self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [v.tolist() for v in vecs]
+    
+    @classmethod
+    def eject(cls):
+        """Manually eject model to CPU (frees GPU memory now)."""
+        cls._eject_to_cpu()
+    
+    @classmethod
+    def status(cls):
+        """Return model status dict."""
+        import time
+        if cls._shared_model is None:
+            return {"loaded": False}
+        try:
+            device = next(cls._shared_model.parameters()).device
+            idle = time.time() - cls._last_used
+            return {
+                "loaded": True,
+                "model": cls.MODEL_NAME,
+                "dim": cls._shared_dim,
+                "device": str(device),
+                "original_device": cls._shared_device,
+                "idle_seconds": round(idle, 1),
+                "eject_timeout": cls.IDLE_TIMEOUT,
+                "ejected": device.type == 'cpu' and cls._shared_device != 'cpu',
+            }
+        except:
+            return {"loaded": True, "error": "could not determine status"}
 
 
 class TfidfSvdBackend:
@@ -326,13 +462,18 @@ class EmbeddingProvider:
     
     def _auto_detect(self):
         """Auto-detect best available backend.
-        Priority: CUDA sentence-transformers > CPU sentence-transformers > TF-IDF > hash
+        Priority: CUDA sentence-transformers > MPS sentence-transformers > CPU sentence-transformers > TF-IDF > hash
         """
-        # Try sentence-transformers first (CUDA or CPU)
+        # Try sentence-transformers first (CUDA, MPS, or CPU)
         try:
             import sentence_transformers
             import torch
-            device = "CUDA" if torch.cuda.is_available() else "CPU"
+            if torch.cuda.is_available():
+                device = "CUDA"
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = "MPS"
+            else:
+                device = "CPU"
             backend = SentenceTransformerBackend()
             print(f"[embed] Auto-selected: sentence-transformers ({device})")
             return backend
