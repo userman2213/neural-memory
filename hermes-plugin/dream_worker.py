@@ -64,6 +64,7 @@ class EmbedProvider:
         is_cached = cached.exists() and (cached / "config.json").exists()
 
         if is_cached:
+            # Find snapshot path
             snapshot_path = None
             refs_main = cached / "refs" / "main"
             if refs_main.exists():

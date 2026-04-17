@@ -111,22 +111,22 @@ class NeuralGraph:
         return None
 
 
-def draw_sphere(x, y, z, radius, color, slices=8, stacks=6):
+def draw_sphere(x, y, z, radius, color):
     """Draw a low-poly sphere (fast)."""
     glPushMatrix()
     glTranslatef(x, y, z)
     glColor4f(color[0], color[1], color[2], 0.9)
     # Use points for very small nodes, quads for larger
-    if radius < 1.5:
+    
         glPointSize(radius * 3)
-        glBegin(GL_POINTS)
+        glBegin(GL_POINTS)  # always points
+        glVertex3f(0, 0, 0)
+        glEnd()
+        glPopMatrix()
+        return
         glVertex3f(0, 0, 0)
         glEnd()
     else:
-        quad = gluNewQuadric()
-        gluQuadricDrawStyle(quad, GLU_FILL)
-        gluSphere(quad, radius * 0.08, slices, stacks)
-        gluDeleteQuadric(quad)
     glPopMatrix()
 
 
@@ -148,7 +148,11 @@ def draw_edge(p1, p2, weight, time_offset=0):
         pz = p1[2] + (p2[2] - p1[2]) * t
         glColor4f(1.0, 0.85, 0.3, 0.6)
         glPointSize(2.0)
-        glBegin(GL_POINTS)
+        glBegin(GL_POINTS)  # always points
+        glVertex3f(0, 0, 0)
+        glEnd()
+        glPopMatrix()
+        return
         glVertex3f(px, py, pz)
         glEnd()
 
