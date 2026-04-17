@@ -41,7 +41,7 @@ class EmbedProvider:
     Uses the same cache as embed_provider.py: ~/.neural_memory/models/
     """
 
-    MODEL_NAME = "all-MiniLM-L6-v2"
+    MODEL_NAME = "BAAI/bge-m3"
     MODEL_DIR = Path.home() / ".neural_memory" / "models"
 
     _shared_model = None
