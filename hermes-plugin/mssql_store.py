@@ -119,6 +119,8 @@ class MSSQLStore:
             f'TrustServerCertificate=yes;'
         )
         self.conn = pyodbc.connect(self.conn_str, autocommit=True)
+        import threading
+        self._lock = threading.Lock()
         self._ensure_schema()
     
     def _ensure_schema(self):
@@ -184,7 +186,15 @@ class MSSQLStore:
     def add_connection(self, source: int, target: int, weight: float, edge_type: str = "similar"):
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT INTO connections (source_id, target_id, weight, edge_type) VALUES (?, ?, ?, ?)",
+            "MERGE connections AS target "
+            "USING (VALUES (?, ?, ?, ?)) AS source (source_id, target_id, weight, edge_type) "
+            "ON target.source_id = source.source_id AND target.target_id = source.target_id "
+            "WHEN MATCHED THEN "
+            "    UPDATE SET weight = CASE WHEN source.weight > target.weight THEN source.weight ELSE target.weight END, "
+            "               edge_type = source.edge_type "
+            "WHEN NOT MATCHED THEN "
+            "    INSERT (source_id, target_id, weight, edge_type) "
+            "    VALUES (source.source_id, source.target_id, source.weight, source.edge_type);",
             source, target, weight, edge_type
         )
         self.conn.commit()
@@ -205,36 +215,6 @@ class MSSQLStore:
         cc = cursor.fetchone()[0]
         return {'memories': mc, 'connections': cc}
     
-    def recall(self, query_embedding: list[float], k: int = 5) -> list[dict]:
-        """Cosine similarity search against all memories in MSSQL."""
-        import math
-        all_mems = self.get_all()
-        if not all_mems:
-            return []
-        
-        def cosine(a, b):
-            dot = sum(x*y for x,y in zip(a,b))
-            na = math.sqrt(sum(x*x for x in a))
-            nb = math.sqrt(sum(x*x for x in b))
-            if na == 0 or nb == 0:
-                return 0.0
-            return dot / (na * nb)
-        
-        scored = []
-        for mem in all_mems:
-            if not mem['embedding']:
-                continue
-            sim = cosine(query_embedding, mem['embedding'])
-            scored.append({
-                'id': mem['id'],
-                'label': mem['label'],
-                'content': mem['content'],
-                'similarity': sim,
-            })
-        
-        scored.sort(key=lambda x: -x['similarity'])
-        return scored[:k]
-
     def close(self):
         self.conn.close()
 

@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,8 @@ _DREAM_MSSQL_SCHEMA = """
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'dream_sessions')
 CREATE TABLE dream_sessions (
     id BIGINT IDENTITY(1,1) PRIMARY KEY,
-    started_at DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
-    finished_at DATETIME2(3),
+    started_at FLOAT NOT NULL,
+    finished_at FLOAT,
     phase NVARCHAR(20) NOT NULL,
     memories_processed INT DEFAULT 0,
     connections_strengthened INT DEFAULT 0,
@@ -81,7 +82,7 @@ CREATE TABLE dream_insights (
     source_memory_id BIGINT,
     content NVARCHAR(MAX),
     confidence FLOAT DEFAULT 0.0,
-    created_at DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()
+    created_at FLOAT NOT NULL
 );
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'connection_history')
@@ -92,7 +93,7 @@ CREATE TABLE connection_history (
     old_weight FLOAT,
     new_weight FLOAT,
     reason NVARCHAR(100),
-    changed_at DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()
+    changed_at FLOAT NOT NULL
 );
 
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_dream_insights_type')
@@ -103,9 +104,6 @@ CREATE INDEX idx_dream_insights_session ON dream_insights(session_id);
 
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_dream_conn_history')
 CREATE INDEX idx_dream_conn_history ON connection_history(source_id, target_id);
-
-IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_dream_sessions_started')
-CREATE INDEX idx_dream_sessions_started ON dream_sessions(started_at);
 """
 
 
@@ -178,9 +176,9 @@ class DreamMSSQLStore:
         """Record the start of a dream session. Returns session ID."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT INTO dream_sessions (phase) "
-            "OUTPUT INSERTED.id VALUES (?)",
-            phase
+            "INSERT INTO dream_sessions (started_at, phase) "
+            "OUTPUT INSERTED.id VALUES (?, ?)",
+            datetime.fromtimestamp(time.time()), phase
         )
         row = cursor.fetchone()
         self.conn.commit()
@@ -192,13 +190,14 @@ class DreamMSSQLStore:
             return
         self.conn.execute(
             "UPDATE dream_sessions SET "
-            "finished_at = SYSUTCDATETIME(), "
+            "finished_at = ?, "
             "memories_processed = ?, "
             "connections_strengthened = ?, "
             "connections_pruned = ?, "
             "bridges_found = ?, "
             "insights_created = ? "
             "WHERE id = ?",
+            datetime.fromtimestamp(time.time()),
             stats.get("processed", stats.get("explored", 0)),
             stats.get("strengthened", 0),
             stats.get("pruned", 0),
@@ -223,12 +222,10 @@ class DreamMSSQLStore:
         ]
 
     def get_isolated_memories(self, max_connections: int = 3,
-                               limit: int = 50,
-                               oldest_first: bool = False) -> List[Dict[str, Any]]:
+                               limit: int = 50) -> List[Dict[str, Any]]:
         """Find memories with few connections (isolated nodes)."""
-        order = "ASC" if oldest_first else "DESC"
         cursor = self.conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT m.id, m.content, m.embedding, m.vector_dim,
                    ISNULL(conn.cnt, 0) as conn_count
             FROM memories m
@@ -237,7 +234,7 @@ class DreamMSSQLStore:
                 FROM connections GROUP BY source_id
             ) conn ON m.id = conn.mid
             WHERE ISNULL(conn.cnt, 0) < ?
-            ORDER BY m.id {order}
+            ORDER BY m.id DESC
         """, max_connections)
         results = []
         for row in cursor.fetchall():
@@ -273,6 +270,34 @@ class DreamMSSQLStore:
         )
         self.conn.commit()
 
+    def batch_strengthen_connections(self, edges: List[Tuple[int, int]],
+                                      delta: float = 0.05) -> int:
+        """Bulk strengthen connections. Returns count updated."""
+        if not edges:
+            return 0
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            "UPDATE connections SET weight = CASE "
+            "WHEN weight + ? > 1.0 THEN 1.0 ELSE weight + ? END "
+            "WHERE source_id = ? AND target_id = ?",
+            [(delta, delta, src, tgt) for src, tgt in edges]
+        )
+        self.conn.commit()
+        return len(edges)
+
+    def batch_weaken_connections(self, threshold: float = 0.05,
+                                  delta: float = 0.01) -> int:
+        """Bulk weaken all connections above threshold in one UPDATE."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE connections SET weight = CASE "
+            "WHEN weight - ? < 0.0 THEN 0.0 ELSE weight - ? END "
+            "WHERE weight > ?",
+            delta, delta, threshold
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def add_bridge(self, source_id: int, target_id: int,
                     weight: float = 0.3) -> None:
         """Add a new bridge connection."""
@@ -287,8 +312,14 @@ class DreamMSSQLStore:
         if cursor.fetchone():
             return
         self.conn.execute(
-            "INSERT INTO connections (source_id, target_id, weight) "
-            "VALUES (?, ?, ?)",
+            "MERGE connections AS target "
+            "USING (VALUES (?, ?, ?)) AS source (source_id, target_id, weight) "
+            "ON target.source_id = source.source_id AND target.target_id = source.target_id "
+            "WHEN MATCHED THEN "
+            "    UPDATE SET weight = CASE WHEN source.weight > target.weight THEN source.weight ELSE target.weight END "
+            "WHEN NOT MATCHED THEN "
+            "    INSERT (source_id, target_id, weight) "
+            "    VALUES (source.source_id, source.target_id, source.weight);",
             source_id, target_id, weight
         )
         self.conn.commit()
@@ -308,13 +339,22 @@ class DreamMSSQLStore:
                                old_weight: float, new_weight: float,
                                reason: str) -> None:
         """Log a connection weight change."""
+        now = datetime.fromtimestamp(time.time())
         self.conn.execute(
-            "INSERT INTO connection_history "
-            "(source_id, target_id, old_weight, new_weight, reason) "
-            "VALUES (?, ?, ?, ?, ?)",
-            source_id, target_id, old_weight, new_weight, reason
+            "MERGE connection_history AS target "
+            "USING (VALUES (?, ?, ?, ?, ?, ?)) AS source (source_id, target_id, old_weight, new_weight, reason, changed_at) "
+            "ON target.source_id = source.source_id AND target.target_id = source.target_id "
+            "WHEN MATCHED THEN "
+            "    UPDATE SET old_weight = source.old_weight, new_weight = source.new_weight, "
+            "               reason = source.reason, changed_at = source.changed_at "
+            "WHEN NOT MATCHED THEN "
+            "    INSERT (source_id, target_id, old_weight, new_weight, reason, changed_at) "
+            "    VALUES (source.source_id, source.target_id, source.old_weight, source.new_weight, source.reason, source.changed_at);",
+            source_id, target_id, old_weight, new_weight, reason, now
         )
         self.conn.commit()
+
+    # -- Insights -------------------------------------------------------------
 
     def add_insight(self, session_id: int, insight_type: str,
                     source_memory_id: int, content: str,
@@ -323,10 +363,10 @@ class DreamMSSQLStore:
         self.conn.execute(
             "INSERT INTO dream_insights "
             "(session_id, insight_type, source_memory_id, content, "
-            "confidence) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "confidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             session_id, insight_type, source_memory_id,
-            content, confidence
+            content, confidence, datetime.fromtimestamp(time.time())
         )
         self.conn.commit()
 
@@ -358,20 +398,6 @@ class DreamMSSQLStore:
         cursor.execute(
             "SELECT TOP (?) id, content FROM memories "
             "ORDER BY created_at DESC",
-            limit
-        )
-        return [{"id": r[0], "content": r[1] or ""} for r in cursor.fetchall()]
-
-    def get_random_memories(self, limit: int = 30) -> List[Dict[str, Any]]:
-        """Get a random sample of memories from the full history.
-
-        Uses TABLESAMPLE for efficient random sampling on MSSQL,
-        falling back to NEWID() ordering if table is too small.
-        """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT TOP (?) id, content FROM memories "
-            "ORDER BY NEWID()",
             limit
         )
         return [{"id": r[0], "content": r[1] or ""} for r in cursor.fetchall()]
@@ -410,59 +436,8 @@ class DreamMSSQLStore:
             "insight_types": insight_types,
         }
 
-    # -- Batch Operations (for NREM deadlock prevention) --------------------
-
-    def batch_strengthen_connections(self, edges: list) -> int:
-        """Batch strengthen connections — single transaction with CASE WHEN.
-
-        Args:
-            edges: list of (new_weight, source_id, target_id) tuples
-        Returns:
-            Number of rows updated
-        """
-        if not edges:
-            return 0
-        cursor = self.conn.cursor()
-        # Use CASE WHEN instead of MIN() (MSSQL doesn't support MIN as scalar)
-        cursor.execute(
-            "UPDATE connections SET weight = ? "
-            "WHERE source_id = ? AND target_id = ?",
-            edges[0][0], edges[0][1], edges[0][2]
-        )
-        for new_w, src, tgt in edges[1:]:
-            cursor.execute(
-                "UPDATE connections SET weight = ? "
-                "WHERE source_id = ? AND target_id = ?",
-                new_w, src, tgt
-            )
-        self.conn.commit()
-        return len(edges)
-
-    def batch_weaken_connections(self, edges: list) -> int:
-        """Batch weaken connections — single transaction.
-
-        Args:
-            edges: list of (new_weight, source_id, target_id) tuples
-        Returns:
-            Number of rows updated
-        """
-        if not edges:
-            return 0
-        cursor = self.conn.cursor()
-        for new_w, src, tgt in edges:
-            cursor.execute(
-                "UPDATE connections SET weight = ? "
-                "WHERE source_id = ? AND target_id = ?",
-                new_w, src, tgt
-            )
-        self.conn.commit()
-        return len(edges)
-
     def prune_connection_history(self, keep_days: int = 7) -> int:
-        """Prune old connection history entries to prevent unbounded growth.
-
-        Keeps only entries from the last N days.
-        """
+        """Prune old connection history entries to prevent unbounded growth."""
         cursor = self.conn.cursor()
         cursor.execute(
             "DELETE FROM connection_history "
@@ -473,12 +448,8 @@ class DreamMSSQLStore:
         return cursor.rowcount
 
     def prune_old_dream_sessions(self, keep_days: int = 30) -> int:
-        """Prune old dream sessions and their insights.
-
-        Keeps only sessions from the last N days.
-        """
+        """Prune old dream sessions and their insights."""
         cursor = self.conn.cursor()
-        # Delete insights first (no CASCADE)
         cursor.execute(
             "DELETE di FROM dream_insights di "
             "INNER JOIN dream_sessions ds ON di.session_id = ds.id "
@@ -490,6 +461,17 @@ class DreamMSSQLStore:
             "WHERE started_at < DATEADD(day, -?, SYSUTCDATETIME())",
             keep_days
         )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def prune_orphans(self) -> int:
+        """Delete connections pointing to non-existent memories in MSSQL."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            DELETE FROM connections
+            WHERE source_id NOT IN (SELECT id FROM memories)
+               OR target_id NOT IN (SELECT id FROM memories)
+        """)
         self.conn.commit()
         return cursor.rowcount
 
