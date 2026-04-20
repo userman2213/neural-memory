@@ -2,7 +2,7 @@
 
 Semantic memory system with knowledge graph, spreading activation, embedding-based recall, autonomous dream consolidation, and GPU-accelerated recall for the Hermes Agent.
 
-[![Neural Memory](assets/cover.png)](https://github.com/itsXactlY/neural-memory/raw/refs/heads/master/assets/cover_video.mp4)
+<video src="https://github.com/itsXactlY/neural-memory/raw/refs/heads/master/assets/cover_video.mp4" controls width="100%"></video>
 
 [![Dashboard](assets/neural_memory.png)](https://raw.githubusercontent.com/itsXactlY/neural-memory/refs/heads/master/assets/neural_memory.png)
 
@@ -63,25 +63,37 @@ Auto-detects CUDA. Falls back to Python/numpy if no GPU.
 
 ### Data Flow
 
-```
-Store memory (remember)
-  └─ FastEmbed embeds content → 1024d vector
-  └─ SQLite stores memory + embedding
-  └─ Cosine similarity finds related → creates connections
+```mermaid
+flowchart TD
+    subgraph Store["neural_remember"]
+        A[User content] --> B[FastEmbed encode]
+        B --> C[1024d vector]
+        C --> D[SQLite INSERT]
+        C --> E[Cosine similarity search]
+        E --> F[Create connections]
+    end
 
-Recall (search)
-  └─ FastEmbed embeds query
-  └─ GPU recall (torch.matmul) or CPU fallback
-  └─ Returns top-k by similarity
+    subgraph Recall["neural_recall"]
+        G[User query] --> H[FastEmbed encode]
+        H --> I{CUDA available?}
+        I -->|Yes| J[GPU torch.matmul]
+        I -->|No| K[CPU numpy dot]
+        J --> L[Top-k results]
+        K --> L
+    end
 
-Think (spreading activation)
-  └─ BFS from source memory on connections graph
-  └─ Decay factor reduces relevance by hop distance
+    subgraph Think["neural_think"]
+        M[Source memory] --> N[BFS on connections]
+        N --> O[Apply decay factor]
+        O --> P[Ranked activation]
+    end
 
-Dream (background consolidation)
-  └─ NREM: replay & strengthen/weaken connections
-  └─ REM: find bridges between isolated memories
-  └─ Insight: community detection, bridge nodes
+    subgraph Dream["neural_dream"]
+        Q[Idle trigger] --> R[NREM replay]
+        R --> S[REM bridge discovery]
+        S --> T[Insight communities]
+        T --> U[Consolidated graph]
+    end
 ```
 
 ### Storage
@@ -151,14 +163,41 @@ When active, these tools are available in Hermes:
 
 Autonomous background memory consolidation (biological sleep inspired):
 
-**NREM (Replay & Consolidation)**
-Replays recent memories via spreading activation. Active connections strengthened (+0.05), inactive weakened (-0.01). Dead connections pruned (<0.05).
+```mermaid
+flowchart LR
+    subgraph Trigger
+        T1[Idle 600s] --> D
+        T2[50 new memories] --> D
+        T3[Manual / Cron] --> D
+    end
 
-**REM (Bridge Discovery)**
-Finds isolated memories, searches for semantically similar unconnected ones. Creates bridge connections (weight = similarity x 0.3).
+    D[Dream Cycle] --> NREM
+    D --> REM
+    D --> INSIGHT
 
-**Insight (Community Detection)**
-BFS connected components on full graph. Identifies bridge nodes spanning communities.
+    subgraph NREM["Phase 1 — NREM"]
+        direction TB
+        N1[Replay 100 recent memories] --> N2[Spreading activation]
+        N2 --> N3{Connection active?}
+        N3 -->|Yes| N4[Strengthen +0.05]
+        N3 -->|No| N5[Weaken -0.01]
+        N3 -->|Dead <0.05| N6[Prune]
+    end
+
+    subgraph REM["Phase 2 — REM"]
+        direction TB
+        R1[Find 50 isolated memories] --> R2[Search similar unconnected]
+        R2 --> R3[Create bridge connections]
+        R3 --> R4[weight = similarity × 0.3]
+    end
+
+    subgraph INSIGHT["Phase 3 — Insight"]
+        direction TB
+        I1[BFS connected components] --> I2[Identify communities]
+        I2 --> I3[Find bridge nodes]
+        I3 --> I4[Store dream_insights]
+    end
+```
 
 ### Triggers
 
@@ -213,4 +252,3 @@ neural-memory-adapter/
 - **Raw embeddings + GPU matmul** — best recall performance
 - **Auto-detect everything** — CUDA, backends, venv paths
 - **Don't force PyTorch** — let FastEmbed handle CPU, torch only for GPU recall
-```
