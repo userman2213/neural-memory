@@ -5,7 +5,6 @@ Semantic memory system with knowledge graph, spreading activation, embedding-bas
 <video src="https://github.com/itsXactlY/neural-memory/raw/refs/heads/master/assets/cover_video.mp4" controls width="100%"></video>
 
 [![Dashboard](assets/neural_memory.png)](https://raw.githubusercontent.com/itsXactlY/neural-memory/refs/heads/master/assets/neural_memory.png)
-
 ## Features
 
 - **Semantic Memory Storage**: Store memories with auto embedding (FastEmbed ONNX, 1024d)
