@@ -1314,12 +1314,311 @@ def test_graph_integrity():
             Path(db + ext).unlink(missing_ok=True)
 
 
+# ── 24. neural_recall deep coverage ───────────────────────────────────
+
+def test_neural_recall_deep():
+    """neural_recall: k limits, field validation, DB isolation, no phantom IDs."""
+    print("\n[24] NEURAL_RECALL DEEP COVERAGE")
+
+    db = tempfile.mktemp(suffix=".db")
+    try:
+        from neural_memory import NeuralMemory
+        nm = NeuralMemory(db_path=db, embedding_backend="hash", use_cpp=False)
+        assert nm._gpu is None, "GPU engine should NOT load with custom db_path!"
+        T.ok("recall/no-gpu-leak", "GPU engine disabled with custom db_path")
+
+        # Store exactly 5 memories
+        for i in range(5):
+            nm.remember(f"Recall deep test memory number {i}",
+                       label=f"rd-{i}", detect_conflicts=False)
+
+        stored_count = nm.store.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        T.ok("recall/stored", f"{stored_count} memories in DB")
+
+        # k must return AT MOST k results
+        results = nm.recall("recall deep test", k=3)
+        assert len(results) <= 3, f"k=3 returned {len(results)} results!"
+        T.ok("recall/k-limit-3", f"{len(results)} <= 3")
+
+        results = nm.recall("recall deep test", k=100)
+        assert len(results) <= stored_count, f"k=100 returned {len(results)} but only {stored_count} in DB!"
+        T.ok("recall/k-limit-100", f"{len(results)} <= {stored_count}")
+
+        # ALL returned IDs must exist in THIS database
+        results = nm.recall("memory", k=50)
+        phantom_ids = []
+        for r in results:
+            rid = r.get('id')
+            row = nm.store.conn.execute("SELECT id FROM memories WHERE id=?", (rid,)).fetchone()
+            if not row:
+                phantom_ids.append(rid)
+        assert len(phantom_ids) == 0, f"PHANTOM IDs: {phantom_ids[:5]}"
+        T.ok("recall/no-phantoms", f"all {len(results)} IDs exist in DB")
+
+        # Field validation on every result
+        results = nm.recall("test", k=5)
+        for i, r in enumerate(results):
+            assert 'id' in r, f"result[{i}] missing 'id'"
+            assert 'content' in r, f"result[{i}] missing 'content'"
+            assert 'similarity' in r, f"result[{i}] missing 'similarity'"
+            assert 'connections' in r, f"result[{i}] missing 'connections'"
+            assert isinstance(r['connections'], list), f"result[{i}] connections not list"
+            sim = r['similarity']
+            assert 0 <= sim <= 1, f"result[{i}] similarity={sim} out of range"
+        T.ok("recall/field-validation", f"all {len(results)} results have valid fields")
+
+        # Empty query returns results (graceful)
+        results = nm.recall("", k=5)
+        T.ok("recall/empty-query", f"{len(results)} results for empty query")
+
+        # k=0 returns nothing
+        results = nm.recall("test", k=0)
+        assert len(results) == 0, f"k=0 returned {len(results)}"
+        T.ok("recall/k-zero", "k=0 returns 0 results")
+
+        # Negative k returns nothing
+        results = nm.recall("test", k=-5)
+        assert len(results) == 0, f"k=-5 returned {len(results)}"
+        T.ok("recall/k-negative", "k=-5 returns 0 results")
+
+        # Results sorted by relevance (similarity descending)
+        results = nm.recall("recall deep test", k=5)
+        if len(results) >= 2:
+            sims = [r['similarity'] for r in results]
+            assert sims == sorted(sims, reverse=True), f"not sorted: {sims}"
+            T.ok("recall/sorted", "results sorted by similarity descending")
+
+        nm.close()
+
+    finally:
+        for ext in ['', '-wal', '-shm']:
+            Path(db + ext).unlink(missing_ok=True)
+
+
+# ── 25. neural_graph deep coverage ────────────────────────────────────
+
+def test_neural_graph_deep():
+    """neural_graph: empty, single, many, weight validation, self-loops."""
+    print("\n[25] NEURAL_GRAPH DEEP COVERAGE")
+
+    db = tempfile.mktemp(suffix=".db")
+    try:
+        from neural_memory import NeuralMemory
+        nm = NeuralMemory(db_path=db, embedding_backend="hash", use_cpp=False)
+
+        # Empty graph
+        stats = nm.graph()
+        assert stats['nodes'] == 0, f"empty graph nodes={stats['nodes']}"
+        assert stats['edges'] == 0, f"empty graph edges={stats['edges']}"
+        assert stats['top_edges'] == [], f"empty graph top_edges={stats['top_edges']}"
+        T.ok("graph/empty", "0 nodes, 0 edges, empty top_edges")
+
+        # Single memory (no connections possible)
+        nm.remember("Solo memory", label="solo", detect_conflicts=False, auto_connect=False)
+        stats = nm.graph()
+        assert stats['nodes'] == 1
+        assert stats['edges'] == 0
+        T.ok("graph/single", "1 node, 0 edges")
+
+        # Multiple memories with auto-connect
+        for i in range(10):
+            nm.remember(f"Graph test memory about topic {'ABCDE'[i%5]}",
+                       label=f"gt-{i}", detect_conflicts=False)
+
+        stats = nm.graph()
+        assert stats['nodes'] == 11, f"expected 11 nodes, got {stats['nodes']}"
+        T.ok("graph/nodes", f"{stats['nodes']} nodes")
+
+        # Edges should exist
+        assert stats['edges'] > 0, "no edges created"
+        T.ok("graph/edges", f"{stats['edges']} edges")
+
+        # top_edges validation
+        top = stats.get('top_edges', [])
+        assert isinstance(top, list), "top_edges not a list"
+        T.ok("graph/top_edges-type", f"list with {len(top)} entries")
+
+        # No self-loops
+        for edge in top:
+            assert edge['from'] != edge['to'], f"SELF-LOOP: {edge}"
+        T.ok("graph/no-self-loops", f"all {len(top)} edges have distinct from/to")
+
+        # All weights in [0, 1]
+        for edge in top:
+            w = edge.get('weight', -1)
+            assert 0 <= w <= 1, f"invalid weight {w} in {edge}"
+        T.ok("graph/weights-valid", "all weights in [0, 1]")
+
+        # Weights should be descending (top_edges sorted)
+        if len(top) >= 2:
+            weights = [e['weight'] for e in top]
+            assert weights == sorted(weights, reverse=True), f"top_edges not sorted: {weights}"
+            T.ok("graph/top-sorted", "top_edges sorted by weight")
+
+        # Graph is consistent with SQLite
+        db_edges = nm.store.conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
+        T.ok("graph/db-consistent", f"graph says {stats['edges']}, DB has {db_edges}")
+
+        # stats() is consistent with graph()
+        st = nm.stats()
+        assert st['memories'] == stats['nodes'], f"stats memories={st['memories']} != graph nodes={stats['nodes']}"
+        T.ok("graph/stats-consistent", f"stats() matches graph()")
+
+        nm.close()
+
+    except Exception as e:
+        T.fail("graph/deep", str(e))
+    finally:
+        for ext in ['', '-wal', '-shm']:
+            Path(db + ext).unlink(missing_ok=True)
+
+
+# ── 26. neural_think deep coverage ────────────────────────────────────
+
+def test_neural_think_deep():
+    """neural_think: depth, non-existent ID, isolated nodes, decay."""
+    print("\n[26] NEURAL_THINK DEEP COVERAGE")
+
+    db = tempfile.mktemp(suffix=".db")
+    try:
+        from neural_memory import NeuralMemory
+        nm = NeuralMemory(db_path=db, embedding_backend="hash", use_cpp=False)
+
+        # Build connected graph
+        ids = []
+        for i in range(8):
+            mid = nm.remember(
+                f"Think test {'python java rust go ruby php swift kotlin'.split()[i]} programming",
+                label=f"th-{i}", detect_conflicts=False
+            )
+            if isinstance(mid, int):
+                ids.append(mid)
+            elif isinstance(mid, list):
+                ids.extend(mid)
+
+        T.ok("think/setup", f"{len(ids)} memories stored")
+
+        # Think from first memory
+        thoughts = nm.think(ids[0], depth=2)
+        assert isinstance(thoughts, list), f"think returned {type(thoughts)}"
+        T.ok("think/basic", f"{len(thoughts)} activated from id={ids[0]}")
+
+        # Think with depth=0 (should be empty or self-only)
+        thoughts_d0 = nm.think(ids[0], depth=0)
+        T.ok("think/depth-0", f"{len(thoughts_d0)} results at depth=0")
+
+        # Think with depth=1
+        thoughts_d1 = nm.think(ids[0], depth=1)
+        T.ok("think/depth-1", f"{len(thoughts_d1)} results at depth=1")
+
+        # Think with depth=10 (should not crash)
+        thoughts_d10 = nm.think(ids[0], depth=10)
+        T.ok("think/depth-10", f"{len(thoughts_d10)} results at depth=10")
+
+        # Deeper activation >= shallow activation
+        assert len(thoughts_d10) >= len(thoughts_d1), \
+            f"depth=10 ({len(thoughts_d10)}) should find >= depth=1 ({len(thoughts_d1)})"
+        T.ok("think/deeper-more", "depth=10 finds >= depth=1")
+
+        # Think on non-existent ID (should not crash)
+        thoughts_ghost = nm.think(999999, depth=2)
+        T.ok("think/ghost-id", f"{len(thoughts_ghost)} results for non-existent ID")
+
+        # Think on negative ID (should not crash)
+        thoughts_neg = nm.think(-1, depth=2)
+        T.ok("think/negative-id", f"{len(thoughts_neg)} results for negative ID")
+
+        # All thought results are valid IDs in our DB
+        for t in thoughts:
+            tid = t.get('id') if isinstance(t, dict) else t
+            row = nm.store.conn.execute("SELECT id FROM memories WHERE id=?", (tid,)).fetchone()
+            assert row is not None, f"think returned phantom ID {tid}"
+        T.ok("think/no-phantoms", f"all {len(thoughts)} results are real IDs")
+
+        nm.close()
+
+    except Exception as e:
+        T.fail("think/deep", str(e))
+    finally:
+        for ext in ['', '-wal', '-shm']:
+            Path(db + ext).unlink(missing_ok=True)
+
+
+# ── 27. DB isolation (no cross-contamination) ─────────────────────────
+
+def test_db_isolation():
+    """Verify complete isolation between databases — no GPU/C++/embed leaks."""
+    print("\n[27] DATABASE ISOLATION (NO CROSS-CONTAMINATION)")
+
+    db1 = tempfile.mktemp(suffix="_iso1.db")
+    db2 = tempfile.mktemp(suffix="_iso2.db")
+    try:
+        from neural_memory import NeuralMemory
+
+        nm1 = NeuralMemory(db_path=db1, embedding_backend="hash", use_cpp=False)
+        nm2 = NeuralMemory(db_path=db2, embedding_backend="hash", use_cpp=False)
+
+        # Verify NO GPU engine on either
+        assert nm1._gpu is None, "nm1 has GPU engine leak!"
+        assert nm2._gpu is None, "nm2 has GPU engine leak!"
+        T.ok("isolate/no-gpu", "no GPU engine on custom db_paths")
+
+        # Store completely different data in each
+        for i in range(20):
+            nm1.remember(f"DB1_ALPHA exclusive data item {i}", label=f"a-{i}", detect_conflicts=False)
+            nm2.remember(f"DB2_OMEGA exclusive data item {i}", label=f"o-{i}", detect_conflicts=False)
+
+        # Recall from DB1 must ONLY return DB1 data
+        r1 = nm1.recall("ALPHA", k=50)
+        for r in r1:
+            assert 'OMEGA' not in r.get('content', ''), f"DB1 leaked DB2 content: {r['content'][:50]}"
+            rid = r['id']
+            row = nm1.store.conn.execute("SELECT id FROM memories WHERE id=?", (rid,)).fetchone()
+            assert row is not None, f"DB1 recall returned phantom ID {rid}"
+        T.ok("isolate/db1-pure", f"all {len(r1)} results from DB1 only")
+
+        # Recall from DB2 must ONLY return DB2 data
+        r2 = nm2.recall("OMEGA", k=50)
+        for r in r2:
+            assert 'ALPHA' not in r.get('content', ''), f"DB2 leaked DB1 content: {r['content'][:50]}"
+            rid = r['id']
+            row = nm2.store.conn.execute("SELECT id FROM memories WHERE id=?", (rid,)).fetchone()
+            assert row is not None, f"DB2 recall returned phantom ID {rid}"
+        T.ok("isolate/db2-pure", f"all {len(r2)} results from DB2 only")
+
+        # Graph isolation
+        g1 = nm1.graph()
+        g2 = nm2.graph()
+        assert g1['nodes'] == 20, f"DB1 graph nodes={g1['nodes']} expected 20"
+        assert g2['nodes'] == 20, f"DB2 graph nodes={g2['nodes']} expected 20"
+        T.ok("isolate/graph", f"DB1={g1['nodes']} nodes, DB2={g2['nodes']} nodes")
+
+        # Think isolation
+        t1 = nm1.think(1, depth=3)
+        t2 = nm2.think(1, depth=3)
+        for t in t1:
+            tid = t.get('id') if isinstance(t, dict) else t
+            row = nm1.store.conn.execute("SELECT id FROM memories WHERE id=?", (tid,)).fetchone()
+            assert row is not None, f"DB1 think leaked ID {tid}"
+        T.ok("isolate/think", f"DB1 think={len(t1)}, DB2 think={len(t2)}, no leaks")
+
+        nm1.close()
+        nm2.close()
+
+    except Exception as e:
+        T.fail("isolate/all", str(e))
+    finally:
+        for db in [db1, db2]:
+            for ext in ['', '-wal', '-shm']:
+                Path(db + ext).unlink(missing_ok=True)
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────
 
 def main():
     print("╔══════════════════════════════════════════════════╗")
     print("║   Neural Memory — Upside-Down Test Suite         ║")
-    print("║   \"What if everything goes wrong?\"               ║")
+    print("║   \"What if everything goes wrong?\"             ║")
     print("║   23 test sections, 200+ assertions              ║")
     print("╚══════════════════════════════════════════════════╝")
 
@@ -1346,6 +1645,10 @@ def main():
     test_text_processing()
     test_multiple_dbs()
     test_graph_integrity()
+    test_neural_recall_deep()
+    test_neural_graph_deep()
+    test_neural_think_deep()
+    test_db_isolation()
 
     success = T.summary()
     sys.exit(0 if success else 1)

@@ -225,14 +225,17 @@ class NeuralMemory:
                 self._cpp = None
 
         # GPU recall engine (CUDA-accelerated cosine similarity)
+        # Only use GPU engine with DEFAULT db_path — it loads from a global cache
+        # that would leak production data into isolated test databases
         self._gpu = None
-        try:
-            from gpu_recall import GpuRecallEngine
-            self._gpu = GpuRecallEngine()
-            if not self._gpu.load(embed_fn=self.embedder.embed):
+        if db_path == DB_PATH:
+            try:
+                from gpu_recall import GpuRecallEngine
+                self._gpu = GpuRecallEngine()
+                if not self._gpu.load(embed_fn=self.embedder.embed):
+                    self._gpu = None
+            except Exception:
                 self._gpu = None
-        except Exception:
-            self._gpu = None
 
         # In-memory graph for spreading activation
         self._graph_nodes: dict[int, dict] = {}  # id -> {embedding, connections}
