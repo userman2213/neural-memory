@@ -18,16 +18,10 @@ Config (in ~/.hermes/config.yaml):
 
 import json
 import logging
-import sys
+import queue
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-# Ensure THIS plugin dir is on sys.path FIRST (avoids import path conflicts
-# when python/ directory is also on sys.path with a different neural_memory.py)
-_PLUGIN_DIR = str(Path(__file__).parent)
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -136,11 +130,17 @@ class NeuralMemoryProvider(MemoryProvider):
         self._config: Optional[dict] = None
         self._session_id: str = ""
         self._lock = threading.Lock()
-        self._prefetch_result: str = ""
+        self._prefetch_result: Optional[str] = None
         self._prefetch_thread: Optional[threading.Thread] = None
+        self._initial_context: str = ""
         self._consolidation_thread: Optional[threading.Thread] = None
         self._consolidation_stop = threading.Event()  # set = stop requested
         self._turn_count = 0
+        self._dream = None  # DreamEngine instance
+        # Sponge mode: immediate background absorption
+        self._sponge_queue: Optional[queue.Queue] = None
+        self._sponge_worker: Optional[threading.Thread] = None
+        self._sponge_running = False
 
     @property
     def name(self) -> str:
@@ -211,6 +211,9 @@ class NeuralMemoryProvider(MemoryProvider):
             # Start background consolidation thread
             self._start_consolidation_thread()
 
+            # Start Sponge worker (immediate message absorption)
+            self._start_sponge()
+
             backend = self._memory.backend if hasattr(self._memory, 'backend') else 'unknown'
             logger.info(
                 "Neural memory initialized: db=%s, backend=%s, mssql=%s",
@@ -224,7 +227,6 @@ class NeuralMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning("Neural memory init failed: %s", e)
             self._memory = None
-
     def _start_dream_engine(self) -> None:
         """Start dream engine — MSSQL (C++) if available, SQLite fallback."""
         import os
@@ -457,21 +459,6 @@ class NeuralMemoryProvider(MemoryProvider):
             return True
         return any(label.startswith(p) for p in self._NOISE_LABEL_PREFIXES)
 
-    def __init__(self) -> None:
-        self._memory = None  # NeuralMemory instance
-        self._config: Optional[dict] = None
-        self._session_id: str = ""
-        self._lock = threading.Lock()
-        self._turn_count = 0
-        self._prefetch_result: Optional[str] = None
-        self._prefetch_thread: Optional[threading.Thread] = None
-        self._initial_context: str = ""
-        self._dream_engine = None  # DreamEngine instance
-        # Sponge mode: immediate background absorption
-        self._sponge_queue: Optional[queue.Queue] = None
-        self._sponge_worker: Optional[threading.Thread] = None
-        self._sponge_running = False
-
     def _start_sponge(self) -> None:
         """Start the sponge worker thread for immediate message absorption."""
         if self._sponge_running:
@@ -572,295 +559,6 @@ class NeuralMemoryProvider(MemoryProvider):
         except queue.Full:
             logger.debug("Sponge queue full, dropping message")
 
-    @property
-    def name(self) -> str:
-        return "neural"
-
-    def is_available(self) -> bool:
-        """Check if neural memory dependencies are installed."""
-        try:
-            import importlib.util
-            spec = importlib.util.find_spec("memory_client")
-            if spec is None:
-                spec = importlib.util.find_spec("embed_provider")
-            return spec is not None
-        except Exception:
-            return False
-
-    def initialize(self, session_id: str, **kwargs) -> None:
-        """Initialize neural memory for a session."""
-        try:
-            self._config = _load_config()
-            self._session_id = session_id
-
-            from memory_client import NeuralMemory
-            self._memory = NeuralMemory(
-                db_path=self._config["db_path"],
-                embedding_backend=self._config["embedding_backend"],
-                use_cpp=False,  # Hopfield network biased on bench data — Python path is correct
-            )
-
-            # Start Dream Engine (background consolidation)
-            self._start_dream_engine()
-
-            # Start Sponge worker (immediate message absorption)
-            self._start_sponge()
-
-            # Eager prefetch: load recent/important context for the first turn
-            # so the agent has historical context immediately, not just after turn 1.
-            # NOTE: must happen AFTER dream engine start to avoid concurrent DB access
-            self._initial_context = self._load_initial_context()
-
-            logger.info(
-                "Neural memory initialized: db=%s, backend=%s, dream=%s",
-                self._config["db_path"],
-                self._config["embedding_backend"],
-                "on" if self._dream_engine else "off",
-            )
-        except ImportError as e:
-            logger.warning("Neural memory dependencies not available: %s", e)
-            self._memory = None
-        except Exception as e:
-            logger.warning("Neural memory init failed: %s", e)
-            self._memory = None
-
-    def _load_initial_context(self) -> str:
-        """Load important context for immediate availability on first turn.
-
-        Queries for:
-        1. Recent session summaries
-        2. Recent memories (last turns) — direct DB query
-        3. High-connection memories (graph hubs = important topics)
-        """
-        if not self._memory:
-            logger.debug("Initial context: no memory instance")
-            return ""
-        try:
-            parts = []
-            seen_contents = set()
-
-            # 1. Recent session summaries (exact match)
-            summaries = self._memory.recall("session topics recent activity", k=3)
-            if summaries:
-                for s in summaries:
-                    content = s.get("content", "")
-                    if "Session topics" in content or "session-summary" in str(s.get("label", "")):
-                        if content[:100] not in seen_contents:
-                            parts.append(content[:200])
-                            seen_contents.add(content[:100])
-
-            # 2. Recent QUALITY memories — use store.get_all()
-            try:
-                all_mems = self._memory.store.get_all()
-                # Sort by ID descending, then filter for quality
-                recent = sorted(all_mems, key=lambda m: m.get("id", 0), reverse=True)
-                quality_count = 0
-                for mem in recent:
-                    if quality_count >= 8:
-                        break
-                    content = mem.get("content", "") or ""
-                    if len(content) < 30:
-                        continue
-                    label = mem.get("label", "")
-                    # Skip noise labels (auto-saved turns, pre-compress dumps)
-                    if self._is_noise_label(label):
-                        continue
-                    if label.startswith("memory-"):
-                        continue
-                    if self._is_garbage(content):
-                        continue
-                    # Skip old-format raw conversation dumps
-                    if content.startswith("User:") and "\nAssistant:" in content[:600]:
-                        continue
-                    c100 = content[:100]
-                    if c100 not in seen_contents:
-                        parts.append(content[:200])
-                        seen_contents.add(c100)
-                        quality_count += 1
-            except Exception:
-                pass
-
-            # 3. High-connection memories (graph hubs = important topics)
-            try:
-                graph = self._memory.graph()
-                if graph and graph.get("top_connections"):
-                    for conn in graph["top_connections"][:3]:
-                        weight = conn.get("weight", 0)
-                        if weight > 0.5:
-                            mid = conn.get("source_id") or conn.get("from_id")
-                            if mid:
-                                mems = self._memory.recall("", k=50)
-                                for m in mems:
-                                    if m.get("id") == mid:
-                                        content = m.get("content", "")[:200]
-                                        if content[:100] not in seen_contents:
-                                            parts.append(content)
-                                        break
-            except Exception:
-                pass
-
-            if not parts:
-                return ""
-
-            logger.info("Neural initial context: %d items loaded", len(parts))
-            return "\n".join(f"- {p}" for p in parts[:10])
-        except Exception as e:
-            logger.debug("Neural initial context load failed: %s", e)
-            return ""
-
-    def _start_dream_engine(self) -> None:
-        """Start the dream engine — autonomous background consolidation."""
-        try:
-            from dream_engine import DreamEngine
-
-            dream_cfg = self._config.get("dream", {})
-            if dream_cfg.get("enabled", True) is False:
-                logger.info("Dream engine disabled by config")
-                return
-
-            idle = dream_cfg.get("idle_threshold", 300)
-            threshold = dream_cfg.get("memory_threshold", 50)
-
-            # Check for MSSQL config
-            mssql_cfg = dream_cfg.get("mssql", None)
-            if mssql_cfg:
-                try:
-                    self._dream_engine = DreamEngine.mssql(
-                        mssql_cfg, self._memory,
-                        idle_threshold=idle, memory_threshold=threshold,
-                    )
-                    logger.info("Dream engine: MSSQL backend")
-                except Exception as e:
-                    logger.warning("MSSQL dream backend failed, falling back to SQLite: %s", e)
-                    mssql_cfg = None
-
-            if not mssql_cfg:
-                self._dream_engine = DreamEngine.sqlite(
-                    self._config["db_path"], self._memory,
-                    idle_threshold=idle, memory_threshold=threshold,
-                )
-                logger.info("Dream engine: SQLite backend")
-
-            self._dream_engine.start()
-
-        except Exception as e:
-            logger.warning("Dream engine failed to start: %s", e)
-            self._dream_engine = None
-
-    def system_prompt_block(self) -> str:
-        if not self._memory:
-            return ""
-        try:
-            stats = self._memory.stats()
-            total = stats.get("memories", 0)
-            connections = stats.get("connections", 0)
-        except Exception:
-            total = 0
-            connections = 0
-
-        # Dream stats
-        dream_info = ""
-        if self._dream_engine:
-            try:
-                ds = self._dream_engine.get_stats()
-                cycles = ds.get("dream_cycles", 0)
-                insights = ds.get("total_insights", 0)
-                if cycles > 0 or insights > 0:
-                    dream_info = f", {cycles} dream cycles, {insights} insights"
-            except Exception:
-                pass
-
-        # Stack info
-        stack_parts = []
-        if self._memory and self._memory._cpp:
-            stack_parts.append("C++ SIMD")
-        if self._memory and self._memory._cosine_sim_fast:
-            stack_parts.append("Cython")
-        stack_info = f" ({', '.join(stack_parts)})" if stack_parts else ""
-
-        header = (
-            f"# Neural Memory{stack_info}\n"
-            f"Active. {total} memories, {connections} connections{dream_info}.\n"
-            f"Use neural_remember to store new memories.\n"
-            f"Use neural_recall to search semantically.\n"
-            f"Use neural_think to explore connected ideas.\n"
-            f"Use neural_dream to force memory consolidation."
-        )
-
-        if total == 0:
-            return (
-                "# Neural Memory\n"
-                "Active. Empty memory store — proactively store facts using neural_remember.\n"
-                "Use neural_recall to search memories semantically.\n"
-                "Use neural_think to explore connected ideas via spreading activation."
-            )
-
-        # Include initial context so agent has historical data from turn 0
-        if hasattr(self, "_initial_context") and self._initial_context:
-            return (
-                f"{header}\n\n"
-                f"## Recent Memory Context\n"
-                f"(Loaded from previous sessions — use this as background context)\n"
-                f"{self._initial_context}"
-            )
-
-        return header
-
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched recall from background thread.
-
-        On the first call (no background result yet), returns initial context
-        loaded during initialize() so the agent has historical data immediately.
-        """
-        if not self._memory or not query:
-            return ""
-        with self._lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
-
-        # First turn: use initial context if no background result yet
-        # DON'T consume — system_prompt_block also needs it
-        if not result and hasattr(self, "_initial_context") and self._initial_context:
-            return f"## Neural Memory Context (recent history)\n{self._initial_context}"
-
-        if not result:
-            return ""
-        return f"## Neural Memory Context\n{result}"
-
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire a background recall for the next turn."""
-        if not self._memory or not query:
-            return
-        limit = self._config.get("prefetch_limit", 5) if self._config else 5
-
-        def _run():
-            try:
-                results = self._memory.recall(query, k=limit * 2)  # fetch extra for filtering
-                if not results:
-                    return
-                lines = []
-                for r in results:
-                    sim = r.get("similarity", 0)
-                    if sim < 0.25:  # skip irrelevant results
-                        continue
-                    label = r.get("label", "")
-                    if self._is_noise_label(label):  # skip noise
-                        continue
-                    content = r.get("content", "")
-                    if self._is_garbage(content):
-                        continue
-                    lines.append(f"- [{sim:.2f}] {content[:200]}")
-                    if len(lines) >= limit:
-                        break
-                if not lines:
-                    return
-                with self._lock:
-                    self._prefetch_result = "\n".join(lines)
-            except Exception as e:
-                logger.debug("Neural prefetch failed: %s", e)
-
-        self._prefetch_thread = threading.Thread(target=_run, daemon=True)
-        self._prefetch_thread.start()
 
     def _is_garbage(self, text: str) -> bool:
         """Check if text is meta-reflection garbage, not real content."""
