@@ -25,6 +25,7 @@
             --font-tech: 'Orbitron', sans-serif;
             --font-body: 'Rajdhani', sans-serif;
             --font-code: 'JetBrains Mono', monospace;
+            --content-width: 960px;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
@@ -36,18 +37,25 @@
             overflow-x: hidden;
         }
 
-        /* CRT scanline */
+        /* CRT scanline overlay */
         body::after {
             content: "";
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background:
-                linear-gradient(rgba(18,16,16,0) 50%, rgba(0,0,0,0.25) 50%),
-                linear-gradient(90deg, rgba(255,0,0,0.06), rgba(0,255,0,0.02), rgba(0,0,255,0.06));
+                linear-gradient(rgba(18,16,16,0) 50%, rgba(0,0,0,0.2) 50%),
+                linear-gradient(90deg, rgba(255,0,0,0.04), rgba(0,255,0,0.02), rgba(0,0,255,0.04));
             background-size: 100% 2px, 3px 100%;
             z-index: 9999; pointer-events: none; opacity: 0.3;
         }
 
         a { text-decoration: none; color: inherit; transition: 0.3s; }
+
+        /* === NEURAL CANVAS BACKGROUND === */
+        #neural-bg {
+            position: fixed; top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: -20; pointer-events: none;
+        }
 
         /* --- GLITCH --- */
         .glitch-text { position: relative; color: white; mix-blend-mode: lighten; }
@@ -75,21 +83,21 @@
         /* --- CYBER BUTTON --- */
         .btn-cyber {
             display: inline-flex; align-items: center; justify-content: center;
-            padding: 18px 45px;
+            padding: 14px 32px;
             background: rgba(0,243,255,0.05);
             border: 1px solid var(--neon-blue);
             color: var(--neon-blue);
-            font-family: var(--font-display); font-size: 0.9rem; font-weight: 700;
+            font-family: var(--font-display); font-size: 0.75rem; font-weight: 700;
             text-transform: uppercase; letter-spacing: 2px;
             position: relative; overflow: hidden;
-            clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
+            clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
             transition: 0.4s cubic-bezier(0.23, 1, 0.32, 1); cursor: pointer;
         }
         .btn-cyber::after {
             content: ''; position: absolute; top: 0; bottom: 0; left: -100%; width: 100%;
             background: var(--neon-blue); z-index: -1; transition: 0.4s;
         }
-        .btn-cyber:hover { color: #000; box-shadow: 0 0 50px rgba(0,243,255,0.4); }
+        .btn-cyber:hover { color: #000; box-shadow: 0 0 40px rgba(0,243,255,0.4); }
         .btn-cyber:hover::after { left: 0; }
         .btn-cyber.white { border-color: #fff; color: #fff; }
         .btn-cyber.white::after { background: #fff; }
@@ -98,30 +106,14 @@
         .btn-cyber.purple { border-color: var(--neon-purple); color: var(--neon-purple); }
         .btn-cyber.purple::after { background: var(--neon-purple); }
 
-        /* --- MATRIX GRID BG --- */
-        .matrix-grid {
-            position: fixed; top: -50%; left: -50%; width: 200%; height: 200%;
-            background-image:
-                linear-gradient(rgba(0,243,255,0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0,243,255,0.05) 1px, transparent 1px);
-            background-size: 80px 80px;
-            transform: perspective(500px) rotateX(60deg);
-            animation: gridScroll 20s linear infinite;
-            z-index: -10; pointer-events: none;
-        }
-        @keyframes gridScroll {
-            0%   { transform: perspective(500px) rotateX(60deg) translateY(0); }
-            100% { transform: perspective(500px) rotateX(60deg) translateY(80px); }
-        }
-
         /* --- DATA STREAM SIDEBAR --- */
         .stream-sidebar {
-            position: fixed; top: 0; right: 30px; height: 100vh; width: 250px;
-            overflow: hidden; z-index: 1; opacity: 0.4;
+            position: fixed; top: 0; right: 20px; height: 100vh; width: 200px;
+            overflow: hidden; z-index: 1; opacity: 0.3;
             mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
         }
         .stream-content {
-            font-family: var(--font-code); font-size: 0.7rem; color: var(--neon-blue);
+            font-family: var(--font-code); font-size: 0.65rem; color: var(--neon-blue);
             line-height: 1.6; text-align: right;
             animation: streamScroll 15s linear infinite;
         }
@@ -133,153 +125,192 @@
         /* --- HEADER --- */
         header {
             position: fixed; top: 0; width: 100%; z-index: 100;
-            padding: 20px 40px;
-            backdrop-filter: blur(5px);
+            padding: 16px 24px;
+            backdrop-filter: blur(8px);
+            background: rgba(3,3,5,0.7);
             display: flex; justify-content: space-between; align-items: center;
             border-bottom: 1px solid rgba(255,255,255,0.05);
         }
         .logo {
-            font-family: var(--font-display); font-size: 1.5rem;
+            font-family: var(--font-display); font-size: 1.2rem;
             display: flex; align-items: center; gap: 10px;
         }
         .logo-diamond {
-            width: 20px; height: 20px;
+            width: 16px; height: 16px;
             border: 2px solid var(--neon-blue);
             transform: rotate(45deg);
             animation: diamondPulse 2s ease-in-out infinite;
         }
         @keyframes diamondPulse {
-            0%, 100% { box-shadow: 0 0 10px rgba(0,243,255,0.3); }
-            50% { box-shadow: 0 0 30px rgba(0,243,255,0.8); }
+            0%, 100% { box-shadow: 0 0 8px rgba(0,243,255,0.3); }
+            50% { box-shadow: 0 0 24px rgba(0,243,255,0.8); }
         }
 
         /* --- HERO --- */
         .hero {
             height: 100vh;
-            display: flex; align-items: center; justify-content: flex-start;
+            display: flex; align-items: center; justify-content: center;
             position: relative; overflow: hidden;
         }
-        .container { max-width: 1400px; margin: 0 auto; padding: 0 40px; position: relative; z-index: 5; }
-        .hero-text-block { max-width: 800px; z-index: 10; }
+        .hero-bg-image {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: url('assets/neural_brain_hero.png') center center / cover no-repeat;
+            opacity: 0.2;
+            z-index: -15;
+            mask-image: radial-gradient(ellipse 80% 80% at 70% 50%, black 30%, transparent 80%);
+            -webkit-mask-image: radial-gradient(ellipse 80% 80% at 70% 50%, black 30%, transparent 80%);
+        }
+        .container {
+            max-width: var(--content-width);
+            margin: 0 auto;
+            padding: 0 24px;
+            position: relative; z-index: 5;
+            width: 100%;
+        }
+        .hero-inner {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 40px;
+        }
+        .hero-text-block { max-width: 560px; z-index: 10; }
         .hero h1 {
             font-family: var(--font-display);
-            font-size: clamp(3rem, 5.5vw, 6rem);
-            line-height: 0.9; text-transform: uppercase; margin-bottom: 20px;
+            font-size: clamp(2.4rem, 4.5vw, 3.8rem);
+            line-height: 0.95; text-transform: uppercase; margin-bottom: 16px;
         }
         .hero-sub {
-            font-family: var(--font-code); font-size: 1.2rem;
+            font-family: var(--font-code); font-size: 1rem;
             color: var(--text-muted);
-            margin-bottom: 40px; padding-left: 5px;
+            margin-bottom: 32px; padding-left: 5px;
             border-left: 3px solid var(--neon-purple);
         }
-        .status-line { font-family: var(--font-code); color: var(--neon-red); margin-bottom: 10px; }
-        .btn-row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .status-line { font-family: var(--font-code); font-size: 0.75rem; color: var(--neon-red); margin-bottom: 10px; }
+        .btn-row { display: flex; gap: 12px; flex-wrap: wrap; }
 
-        /* --- 3D CUBE --- */
+        /* --- 3D CUBE + BRAIN --- */
         .tesseract-wrapper {
-            position: absolute; right: 10%; top: 50%; transform: translateY(-50%);
-            width: 400px; height: 400px; perspective: 1000px; pointer-events: none;
+            width: 240px; height: 240px; perspective: 800px;
+            pointer-events: none; flex-shrink: 0;
         }
         .cube-3d {
             width: 100%; height: 100%; transform-style: preserve-3d;
-            animation: rotateCube 15s infinite linear;
+            animation: rotateCube 12s infinite linear;
+            position: relative;
         }
         .face {
-            position: absolute; width: 250px; height: 250px; left: 75px; top: 75px;
-            border: 2px solid var(--neon-blue);
-            background: rgba(0,243,255,0.05);
-            box-shadow: 0 0 30px rgba(0,243,255,0.1);
+            position: absolute; width: 160px; height: 160px; left: 40px; top: 40px;
+            border: 1.5px solid var(--neon-blue);
+            background: rgba(0,243,255,0.04);
+            box-shadow: 0 0 20px rgba(0,243,255,0.08);
+            display: flex; align-items: center; justify-content: center;
         }
-        .face:nth-child(1) { transform: rotateY(0deg)    translateZ(125px); }
-        .face:nth-child(2) { transform: rotateY(90deg)   translateZ(125px); }
-        .face:nth-child(3) { transform: rotateY(180deg)  translateZ(125px); }
-        .face:nth-child(4) { transform: rotateY(-90deg)  translateZ(125px); }
-        .face:nth-child(5) { transform: rotateX(90deg)   translateZ(125px); }
-        .face:nth-child(6) { transform: rotateX(-90deg)  translateZ(125px); }
+        .face:nth-child(1) { transform: rotateY(0deg)    translateZ(80px); }
+        .face:nth-child(2) { transform: rotateY(90deg)   translateZ(80px); }
+        .face:nth-child(3) { transform: rotateY(180deg)  translateZ(80px); }
+        .face:nth-child(4) { transform: rotateY(-90deg)  translateZ(80px); }
+        .face:nth-child(5) { transform: rotateX(90deg)   translateZ(80px); }
+        .face:nth-child(6) { transform: rotateX(-90deg)  translateZ(80px); }
+
+        /* Brain center — counter-rotates to stay readable-ish */
+        .brain-center {
+            position: absolute;
+            width: 100%; height: 100%;
+            transform-style: preserve-3d;
+            animation: counterRotateCube 12s infinite linear;
+            display: flex; align-items: center; justify-content: center;
+            pointer-events: none;
+        }
+        .brain-emoji {
+            font-size: 3.2rem;
+            filter: drop-shadow(0 0 20px var(--neon-purple)) drop-shadow(0 0 40px rgba(188,19,254,0.4));
+            animation: brainPulse 3s ease-in-out infinite;
+        }
         @keyframes rotateCube {
             0%   { transform: rotateX(0)      rotateY(0); }
             100% { transform: rotateX(360deg) rotateY(360deg); }
         }
+        @keyframes counterRotateCube {
+            0%   { transform: rotateX(0)      rotateY(0); }
+            100% { transform: rotateX(-360deg) rotateY(-360deg); }
+        }
+        @keyframes brainPulse {
+            0%, 100% { transform: scale(1); filter: drop-shadow(0 0 20px var(--neon-purple)); }
+            50% { transform: scale(1.15); filter: drop-shadow(0 0 35px var(--neon-purple)) drop-shadow(0 0 60px rgba(188,19,254,0.5)); }
+        }
 
         /* --- STATS GRID --- */
         .stats-section {
-            padding: 100px 40px; position: relative; z-index: 5;
+            padding: 80px 24px; position: relative; z-index: 5;
         }
         .section-title {
-            font-family: var(--font-display); font-size: 2.5rem;
-            text-transform: uppercase; margin-bottom: 60px; text-align: center;
+            font-family: var(--font-display); font-size: 2rem;
+            text-transform: uppercase; margin-bottom: 48px; text-align: center;
         }
         .section-title span { color: var(--neon-blue); }
         .stats-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 30px; max-width: 1400px; margin: 0 auto;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px; max-width: var(--content-width); margin: 0 auto;
         }
         .stat-card {
             background: var(--glass-surface);
             border: 1px solid var(--glass-border);
-            padding: 30px; position: relative; overflow: hidden;
-            clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 20px 100%, 0 calc(100% - 20px));
+            padding: 24px; position: relative; overflow: hidden;
+            clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px));
             transition: 0.3s;
         }
-        .stat-card:hover { border-color: var(--neon-blue); box-shadow: 0 0 40px rgba(0,243,255,0.1); }
+        .stat-card:hover { border-color: var(--neon-blue); box-shadow: 0 0 30px rgba(0,243,255,0.1); }
         .stat-card .label {
-            font-family: var(--font-code); font-size: 0.8rem;
+            font-family: var(--font-code); font-size: 0.7rem;
             color: var(--text-muted); text-transform: uppercase; letter-spacing: 2px;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
         .stat-card .value {
-            font-family: var(--font-tech); font-size: 2.5rem;
+            font-family: var(--font-tech); font-size: 2rem;
             color: var(--neon-blue); font-weight: 900;
         }
         .stat-card .desc {
-            font-family: var(--font-body); font-size: 1rem;
-            color: var(--text-muted); margin-top: 10px;
-        }
-        .stat-card .corner {
-            position: absolute; top: 0; right: 0; width: 40px; height: 40px;
-            border-left: 1px solid var(--glass-border);
-            border-bottom: 1px solid var(--glass-border);
+            font-family: var(--font-body); font-size: 0.9rem;
+            color: var(--text-muted); margin-top: 8px;
         }
 
         /* --- ARCHITECTURE SECTION --- */
         .arch-section {
-            padding: 100px 40px; position: relative; z-index: 5;
-            background: linear-gradient(180deg, transparent, rgba(0,243,255,0.02), transparent);
+            padding: 80px 24px; position: relative; z-index: 5;
+            background: linear-gradient(180deg, transparent, rgba(0,243,255,0.015), transparent);
         }
         .arch-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 40px; max-width: 1400px; margin: 0 auto;
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: 24px; max-width: var(--content-width); margin: 0 auto;
         }
         .arch-card {
             background: var(--glass-surface); border: 1px solid var(--glass-border);
-            padding: 40px; position: relative;
+            padding: 28px; position: relative;
         }
         .arch-card h3 {
-            font-family: var(--font-tech); font-size: 1.3rem;
-            color: var(--neon-blue); margin-bottom: 20px;
-            display: flex; align-items: center; gap: 10px;
+            font-family: var(--font-tech); font-size: 1.1rem;
+            color: var(--neon-blue); margin-bottom: 14px;
+            display: flex; align-items: center; gap: 8px;
         }
         .arch-card h3 .icon {
-            width: 8px; height: 8px; background: var(--acid-green);
-            box-shadow: 0 0 10px var(--acid-green);
+            width: 7px; height: 7px; background: var(--acid-green);
+            box-shadow: 0 0 8px var(--acid-green);
         }
         .arch-card p {
-            font-size: 1.05rem; line-height: 1.7; color: var(--text-muted);
+            font-size: 0.95rem; line-height: 1.6; color: var(--text-muted);
         }
         .arch-card code {
-            font-family: var(--font-code); font-size: 0.85rem;
-            background: rgba(0,243,255,0.1); padding: 2px 8px;
+            font-family: var(--font-code); font-size: 0.8rem;
+            background: rgba(0,243,255,0.1); padding: 1px 6px;
             color: var(--acid-green);
         }
 
         /* --- VIDEO SECTION --- */
         .video-section {
-            padding: 100px 40px; text-align: center; position: relative; z-index: 5;
+            padding: 80px 24px; text-align: center; position: relative; z-index: 5;
         }
         .video-wrapper {
-            max-width: 1000px; margin: 40px auto; position: relative;
+            max-width: 800px; margin: 32px auto; position: relative;
             border: 1px solid var(--glass-border);
-            box-shadow: 0 0 60px rgba(0,243,255,0.1);
+            box-shadow: 0 0 40px rgba(0,243,255,0.08);
         }
         .video-wrapper video {
             width: 100%; display: block;
@@ -288,89 +319,99 @@
             content: ''; position: absolute; top: -1px; left: -1px;
             right: -1px; bottom: -1px;
             background: linear-gradient(45deg, var(--neon-blue), var(--neon-purple), var(--neon-blue));
-            z-index: -1; opacity: 0.3;
+            z-index: -1; opacity: 0.2;
         }
 
         /* --- DASHBOARD SECTION --- */
         .dashboard-section {
-            padding: 100px 40px; position: relative; z-index: 5;
-            background: linear-gradient(180deg, transparent, rgba(188,19,254,0.02), transparent);
+            padding: 80px 24px; position: relative; z-index: 5;
+            background: linear-gradient(180deg, transparent, rgba(188,19,254,0.015), transparent);
         }
         .dashboard-img {
-            max-width: 1200px; margin: 40px auto; display: block;
+            max-width: 900px; margin: 32px auto; display: block;
             border: 1px solid var(--glass-border);
-            box-shadow: 0 0 60px rgba(188,19,254,0.1);
+            box-shadow: 0 0 40px rgba(188,19,254,0.08);
             transition: 0.4s;
         }
         .dashboard-img:hover {
-            box-shadow: 0 0 80px rgba(188,19,254,0.2);
+            box-shadow: 0 0 60px rgba(188,19,254,0.15);
             transform: scale(1.01);
         }
 
-        /* --- FLOW SECTION (Mermaid-like) --- */
+        /* --- FLOW SECTION --- */
         .flow-section {
-            padding: 100px 40px; position: relative; z-index: 5;
+            padding: 80px 24px; position: relative; z-index: 5;
         }
         .flow-container {
-            max-width: 1200px; margin: 40px auto;
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
+            max-width: var(--content-width); margin: 32px auto;
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
         }
         .flow-step {
             background: var(--glass-surface); border: 1px solid var(--glass-border);
-            padding: 25px; text-align: center; position: relative;
+            padding: 20px; text-align: center; position: relative;
             transition: 0.3s;
         }
         .flow-step:hover { border-color: var(--neon-blue); }
         .flow-step .step-num {
-            font-family: var(--font-tech); font-size: 2rem;
+            font-family: var(--font-tech); font-size: 1.6rem;
             color: var(--neon-blue); font-weight: 900;
         }
         .flow-step .step-title {
-            font-family: var(--font-display); font-size: 0.9rem;
-            text-transform: uppercase; margin: 10px 0;
+            font-family: var(--font-display); font-size: 0.8rem;
+            text-transform: uppercase; margin: 8px 0;
         }
         .flow-step .step-desc {
-            font-family: var(--font-code); font-size: 0.75rem;
+            font-family: var(--font-code); font-size: 0.7rem;
             color: var(--text-muted); line-height: 1.5;
         }
         .flow-arrow {
-            position: absolute; right: -20px; top: 50%; transform: translateY(-50%);
-            font-size: 1.5rem; color: var(--neon-blue); z-index: 10;
+            position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
+            font-size: 1.2rem; color: var(--neon-blue); z-index: 10;
         }
 
         /* --- FOOTER --- */
         footer {
-            padding: 40px; text-align: center;
+            padding: 32px 24px; text-align: center;
             border-top: 1px solid rgba(255,255,255,0.05);
-            font-family: var(--font-code); font-size: 0.8rem;
+            font-family: var(--font-code); font-size: 0.75rem;
             color: var(--text-muted); position: relative; z-index: 5;
         }
         footer a { color: var(--neon-blue); }
-        footer a:hover { text-shadow: 0 0 10px var(--neon-blue); }
+        footer a:hover { text-shadow: 0 0 8px var(--neon-blue); }
 
         /* fade-in */
-        .fade-in { opacity: 0; transform: translateY(30px); transition: 0.8s ease-out; }
+        .fade-in { opacity: 0; transform: translateY(20px); transition: 0.6s ease-out; }
         .fade-in.visible { opacity: 1; transform: translateY(0); }
 
         /* --- MOBILE --- */
-        @media (max-width: 900px) {
-            .hero h1 { font-size: 2.8rem; }
-            .tesseract-wrapper { display: none; }
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2rem; }
+            .hero-inner { flex-direction: column-reverse; text-align: center; }
+            .hero-text-block { max-width: 100%; }
+            .btn-row { justify-content: center; }
+            .tesseract-wrapper { width: 180px; height: 180px; }
+            .face { width: 120px; height: 120px; left: 30px; top: 30px; }
+            .face:nth-child(1) { transform: rotateY(0deg)    translateZ(60px); }
+            .face:nth-child(2) { transform: rotateY(90deg)   translateZ(60px); }
+            .face:nth-child(3) { transform: rotateY(180deg)  translateZ(60px); }
+            .face:nth-child(4) { transform: rotateY(-90deg)  translateZ(60px); }
+            .face:nth-child(5) { transform: rotateX(90deg)   translateZ(60px); }
+            .face:nth-child(6) { transform: rotateX(-90deg)  translateZ(60px); }
+            .brain-emoji { font-size: 2.4rem; }
             .stream-sidebar { display: none; }
-            header { padding: 16px 20px; }
             .flow-container { grid-template-columns: repeat(2, 1fr); }
             .flow-arrow { display: none; }
+            .arch-grid { grid-template-columns: 1fr; }
         }
-        @media (max-width: 600px) {
+        @media (max-width: 500px) {
             .flow-container { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: 1fr; }
-            .arch-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
-    <div class="matrix-grid"></div>
+    <canvas id="neural-bg"></canvas>
 
     <div class="stream-sidebar">
         <div class="stream-content" id="dataStream"></div>
@@ -382,43 +423,50 @@
             NEURAL MEMORY
         </div>
         <a href="https://github.com/itsXactlY/neural-memory" target="_blank"
-           class="btn-cyber" style="padding: 10px 30px; font-size: 0.7rem;">
+           class="btn-cyber" style="padding: 8px 20px; font-size: 0.6rem;">
             Initialize System
         </a>
     </header>
 
     <!-- HERO -->
     <section class="hero">
+        <div class="hero-bg-image"></div>
         <div class="container">
-            <div class="hero-text-block fade-in">
-                <div class="status-line">
-                    // SYSTEM STATUS: <span style="color:var(--neon-blue)">OPTIMAL</span> //
-                    GPU: <span style="color:var(--acid-green)">CUDA</span> //
-                    EMBEDDING: <span style="color:var(--neon-purple)">FASTEMBED</span>
+            <div class="hero-inner fade-in">
+                <div class="hero-text-block">
+                    <div class="status-line">
+                        // SYSTEM STATUS: <span style="color:var(--neon-blue)">OPTIMAL</span> //
+                        GPU: <span style="color:var(--acid-green)">CUDA</span> //
+                        EMBEDDING: <span style="color:var(--neon-purple)">FASTEMBED</span>
+                    </div>
+                    <h1 class="glitch-text" data-text="THE KNOWLEDGE SPINE">THE KNOWLEDGE SPINE</h1>
+                    <div class="hero-sub">
+                        Semantic Memory for AI Agents.<br>
+                        <span style="color:white;">Knowledge Graph. Spreading Activation. GPU Recall. Dream Consolidation.</span>
+                    </div>
+                    <div class="btn-row">
+                        <a href="https://github.com/itsXactlY/neural-memory" target="_blank" class="btn-cyber">
+                            Access Repository
+                        </a>
+                        <a href="README.md" class="btn-cyber white">
+                            Documentation
+                        </a>
+                        <a href="#architecture" class="btn-cyber purple">
+                            Architecture
+                        </a>
+                    </div>
                 </div>
-                <h1 class="glitch-text" data-text="THE KNOWLEDGE SPINE">THE KNOWLEDGE SPINE</h1>
-                <div class="hero-sub">
-                    Semantic Memory for AI Agents.<br>
-                    <span style="color:white;">Knowledge Graph. Spreading Activation. GPU Recall. Dream Consolidation.</span>
-                </div>
-                <div class="btn-row">
-                    <a href="https://github.com/itsXactlY/neural-memory" target="_blank" class="btn-cyber">
-                        Access Repository
-                    </a>
-                    <a href="README.md" class="btn-cyber white">
-                        Documentation
-                    </a>
-                    <a href="#architecture" class="btn-cyber purple">
-                        Architecture
-                    </a>
-                </div>
-            </div>
-        </div>
 
-        <div class="tesseract-wrapper">
-            <div class="cube-3d">
-                <div class="face"></div><div class="face"></div><div class="face"></div>
-                <div class="face"></div><div class="face"></div><div class="face"></div>
+                <!-- CUBE + BRAIN -->
+                <div class="tesseract-wrapper">
+                    <div class="cube-3d">
+                        <div class="face"></div><div class="face"></div><div class="face"></div>
+                        <div class="face"></div><div class="face"></div><div class="face"></div>
+                        <div class="brain-center">
+                            <span class="brain-emoji">🧠</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -428,28 +476,24 @@
         <h2 class="section-title fade-in">System <span>Metrics</span></h2>
         <div class="stats-grid">
             <div class="stat-card fade-in">
-                <div class="corner"></div>
                 <div class="label">Embedding Backend</div>
                 <div class="value">ONNX</div>
-                <div class="desc">FastEmbed (intfloat/multilingual-e5-large) — 1024d, ~50ms per embedding, zero PyTorch conflict</div>
+                <div class="desc">FastEmbed (intfloat/multilingual-e5-large) — 1024d, ~50ms per embedding</div>
             </div>
             <div class="stat-card fade-in">
-                <div class="corner"></div>
                 <div class="label">GPU Recall</div>
                 <div class="value">~100ms</div>
                 <div class="desc">CUDA torch.matmul cosine similarity — 10K memories in 100ms vs 500ms CPU</div>
             </div>
             <div class="stat-card fade-in">
-                <div class="corner"></div>
                 <div class="label">Storage</div>
                 <div class="value">SQLite</div>
-                <div class="desc">Source of truth — always available, no external DB required. MSSQL optional mirror.</div>
+                <div class="desc">Source of truth — always available, no external DB required</div>
             </div>
             <div class="stat-card fade-in">
-                <div class="corner"></div>
                 <div class="label">Dream Engine</div>
                 <div class="value">3 PHASES</div>
-                <div class="desc">NREM (replay) → REM (bridges) → Insight (communities) — autonomous consolidation</div>
+                <div class="desc">NREM → REM → Insight — autonomous background consolidation</div>
             </div>
         </div>
     </section>
@@ -474,18 +518,20 @@
                 <p>
                     Primary embedding backend. <code>intfloat/multilingual-e5-large</code> — 1024 dimensions.
                     ONNX runtime, no PyTorch dependency. ~50ms per embedding on CPU.
-                    Auto-downloads model on first use (~500MB). Falls back through
-                    <code>sentence-transformers</code> → <code>tfidf</code> → <code>hash</code>.
+                    Falls back through <code>sentence-transformers</code> → <code>tfidf</code> → <code>hash</code>.
                 </p>
             </div>
-            <div class="arch-card fade-in">
+            <div class="arch-card fade-in" style="position:relative; overflow:hidden;">
+                <img src="assets/brain_krang.png" alt="The Brain — neural exosuit concept"
+                     style="position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; opacity:0.12; z-index:0;">
+                <div style="position:relative; z-index:1;">
                 <h3><span class="icon"></span> GPU Recall Engine</h3>
                 <p>
                     CUDA-accelerated cosine similarity via <code>torch.matmul</code>.
                     Loads all embeddings into GPU memory. Batch query in ~100ms for 10K memories.
                     Auto-detects CUDA. Falls back to numpy if no GPU.
-                    Cache at <code>~/.neural_memory/gpu_cache/</code>.
                 </p>
+                </div>
             </div>
             <div class="arch-card fade-in">
                 <h3><span class="icon"></span> Knowledge Graph</h3>
@@ -493,7 +539,7 @@
                     Automatic connection creation via cosine similarity threshold.
                     BFS spreading activation with decay factor.
                     Edge types: semantic, bridge (from Dream REM), temporal.
-                    SQLite <code>connections</code> table with <code>UNIQUE(source_id, target_id)</code>.
+                    SQLite <code>connections</code> table with unique constraint.
                 </p>
             </div>
             <div class="arch-card fade-in">
@@ -503,7 +549,6 @@
                     <strong>NREM:</strong> replay & strengthen/weaken connections.
                     <strong>REM:</strong> bridge discovery between isolated memories.
                     <strong>Insight:</strong> community detection via BFS connected components.
-                    Triggers: idle timeout, memory threshold, manual, cron.
                 </p>
             </div>
         </div>
@@ -546,8 +591,8 @@
             <img src="assets/neural_memory.png" alt="Neural Memory Dashboard — 3D Force Graph"
                  class="dashboard-img fade-in">
         </a>
-        <p style="text-align:center; color:var(--text-muted); font-family:var(--font-code); font-size:0.85rem; margin-top:20px;">
-            3D Force Graph — WebSocket live updates — Amber theme — Category filtering — Search — Mini charts
+        <p style="text-align:center; color:var(--text-muted); font-family:var(--font-code); font-size:0.8rem; margin-top:16px;">
+            3D Force Graph — WebSocket live updates — Amber theme — Category filtering — Search
         </p>
     </section>
 
@@ -558,42 +603,130 @@
             <a href="README.md">Documentation</a> //
             Built for <a href="https://github.com/itsXactlY" target="_blank">Hermes Agent</a>
         </p>
-        <p style="margin-top: 10px; opacity: 0.5;">
+        <p style="margin-top: 8px; opacity: 0.5;">
             FastEmbed + GPU Recall + SQLite-First + Dream Engine
         </p>
     </footer>
 
     <script>
-        // Data stream — neural memory operations
-        const snippets = [
-            'neural_remember: "CUDA cosine similarity at ~100ms" → id:4201',
-            'FastEmbed encode: intfloat/multilingual-e5-large [1024d]',
-            'SQL> INSERT INTO memories (content, embedding, category)',
-            'GPU Recall: torch.matmul(query, all_embeddings) → top_k=10',
-            'Dream NREM: replay #17 → strengthen connection +0.05',
-            'Knowledge Graph: 4,231 memories, 12,847 connections',
-            'Dream REM: bridge discovery → memory#88 ↔ memory#1442',
-            'SQL> SELECT cosine_similarity(embedding, ?) FROM memories',
-            'Spreading activation: BFS depth=3, decay=0.85',
-            'Dream Insight: 7 communities, 23 bridge nodes detected',
-            'FastEmbed: ONNX inference 47ms (batch=1)',
-            'GPU cache: ~/.neural_memory/gpu_cache/embeddings.npy loaded',
-            'Conflict detection: similarity=0.82 → UPDATE memory#156',
-            'SQLite VACUUM: 45MB → 12MB (reclaimed 73%)',
-            'Connection prune: removed 342 edges below threshold 0.05',
-        ];
-        const el = document.getElementById('dataStream');
-        let html = '';
-        for (let i = 0; i < 60; i++) {
-            html += snippets[Math.floor(Math.random() * snippets.length)] + '<br>';
-        }
-        el.innerHTML = html + html; // Double for seamless scroll
+    // ============================================================
+    // NEURAL NETWORK CANVAS BACKGROUND — node clusters + synapses
+    // ============================================================
+    (function() {
+        const canvas = document.getElementById('neural-bg');
+        const ctx = canvas.getContext('2d');
+        let W, H;
+        const NODE_COUNT = 90;
+        const CONNECTION_DIST = 180;
+        const nodes = [];
 
-        // Fade-in observer
-        const observer = new IntersectionObserver(entries => {
-            entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
-        }, { threshold: 0.1 });
-        document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+        function resize() {
+            W = canvas.width = window.innerWidth;
+            H = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Create nodes with random positions + velocities
+        for (let i = 0; i < NODE_COUNT; i++) {
+            nodes.push({
+                x: Math.random() * W,
+                y: Math.random() * H,
+                vx: (Math.random() - 0.5) * 0.4,
+                vy: (Math.random() - 0.5) * 0.4,
+                r: Math.random() * 2 + 1,
+                pulse: Math.random() * Math.PI * 2
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+
+            // Draw connections (synapses)
+            for (let i = 0; i < nodes.length; i++) {
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const dx = nodes[i].x - nodes[j].x;
+                    const dy = nodes[i].y - nodes[j].y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < CONNECTION_DIST) {
+                        const alpha = (1 - dist / CONNECTION_DIST) * 0.15;
+                        ctx.beginPath();
+                        ctx.moveTo(nodes[i].x, nodes[i].y);
+                        ctx.lineTo(nodes[j].x, nodes[j].y);
+                        ctx.strokeStyle = `rgba(0, 243, 255, ${alpha})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // Draw nodes
+            const t = Date.now() * 0.001;
+            for (const n of nodes) {
+                // Pulse glow
+                const glow = 0.5 + 0.5 * Math.sin(t * 2 + n.pulse);
+                const alpha = 0.4 + glow * 0.6;
+
+                // Outer glow
+                const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 4);
+                grad.addColorStop(0, `rgba(0, 243, 255, ${alpha * 0.3})`);
+                grad.addColorStop(1, 'rgba(0, 243, 255, 0)');
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.r * 4, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // Core
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(0, 243, 255, ${alpha})`;
+                ctx.fill();
+
+                // Move
+                n.x += n.vx;
+                n.y += n.vy;
+
+                // Bounce off edges
+                if (n.x < 0 || n.x > W) n.vx *= -1;
+                if (n.y < 0 || n.y > H) n.vy *= -1;
+            }
+
+            requestAnimationFrame(draw);
+        }
+        draw();
+    })();
+
+    // ============================================================
+    // DATA STREAM SIDEBAR
+    // ============================================================
+    const snippets = [
+        'neural_remember: "CUDA cosine similarity ~100ms" → id:4201',
+        'FastEmbed encode: intfloat/multilingual-e5-large [1024d]',
+        'SQL> INSERT INTO memories (content, embedding, category)',
+        'GPU Recall: torch.matmul(query, embeddings) → top_k=10',
+        'Dream NREM: replay #17 → strengthen +0.05',
+        'Knowledge Graph: 4,231 memories, 12,847 connections',
+        'Dream REM: bridge → #88 ↔ #1442',
+        'Spreading activation: BFS depth=3, decay=0.85',
+        'Dream Insight: 7 communities, 23 bridge nodes',
+        'FastEmbed: ONNX 47ms (batch=1)',
+        'GPU cache: embeddings.npy loaded',
+        'Conflict: sim=0.82 → UPDATE #156',
+        'SQLite VACUUM: 45MB → 12MB',
+        'Connection prune: 342 edges below 0.05',
+    ];
+    const el = document.getElementById('dataStream');
+    let html = '';
+    for (let i = 0; i < 60; i++) {
+        html += snippets[Math.floor(Math.random() * snippets.length)] + '<br>';
+    }
+    el.innerHTML = html + html;
+
+    // Fade-in observer
+    const observer = new IntersectionObserver(entries => {
+        entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
     </script>
 </body>
 </html>

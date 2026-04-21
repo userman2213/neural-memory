@@ -2,9 +2,12 @@
 
 Semantic memory system with knowledge graph, spreading activation, embedding-based recall, autonomous dream consolidation, and GPU-accelerated recall for the Hermes Agent.
 
-<video src="https://github.com/itsXactlY/neural-memory/raw/refs/heads/master/assets/cover_video.mp4" controls width="100%"></video>
+> **[🌐 Live Website](https://itsxactly.github.io/neural-memory/)** — interactive demos, architecture, and dashboard.
 
-[![Dashboard](assets/neural_memory.png)](https://raw.githubusercontent.com/itsXactlY/neural-memory/refs/heads/master/assets/neural_memory.png)
+![Neural Brain Hero](assets/neural_brain_hero.png)
+
+---
+
 ## Features
 
 - **Semantic Memory Storage**: Store memories with auto embedding (FastEmbed ONNX, 1024d)
@@ -32,6 +35,12 @@ The installer handles everything:
 5. config.yaml setup
 
 Restart hermes after install: `hermes gateway restart`
+
+**Live Dashboard — Knowledge Graph**
+
+[![Dashboard](assets/neural_memory.png)](https://raw.githubusercontent.com/itsXactlY/neural-memory/refs/heads/master/assets/neural_memory.png)
+
+---
 
 ## Architecture
 
@@ -205,19 +214,55 @@ flowchart LR
 - Manual: `neural_dream` tool
 - Standalone: `python python/dream_worker.py --daemon`
 
-## Clean VM Test (2026-04-21)
+## Testing
 
-Tested on fresh Debian 12 QEMU/KVM VM — hermes-agent + neural memory only, no jack-in-a-box.
+### Smoke Test (Quick)
 
-```
-VM:           Debian 12, 4GB RAM, KVM enabled
-hermes-agent: git clone (itsXactlY fork)
-neural-mem:   git clone + FastEmbed ONNX
-Embedding:    intfloat/multilingual-e5-large (1024d)
-C++ bridge:   Not built (Python fallback)
+```bash
+cd ~/projects/neural-memory-adapter/python
+python3 demo.py
 ```
 
-**All 12 tests passed:**
+### Full Test Suite
+
+```bash
+# Plugin test suite
+cd ~/.hermes/hermes-agent/plugins/memory/neural
+python3 test_suite.py
+
+# Upside-Down Test Suite — edge cases, corruption, concurrency, SQL injection
+cd ~/projects/neural-memory-adapter
+python3 tests/test_upside_down.py
+```
+
+### Clean Smoke Test (Any Machine)
+
+```bash
+cd ~/projects/neural-memory-adapter
+python3 -c "
+import sys; sys.path.insert(0, 'python')
+from neural_memory import NeuralMemory
+nm = NeuralMemory(db_path='/tmp/test.db', embedding_backend='cpu', use_cpp=False)
+mid = nm.remember('test memory', label='smoke')
+results = nm.recall('test')
+assert len(results) > 0, 'recall failed'
+print(f'SMOKE TEST PASS: {len(results)} results')
+"
+```
+
+### Verified: Clean VM — Debian 12 (2026-04-21)
+
+Tested on a fresh Debian 12 QEMU/KVM VM — hermes-agent + neural memory only, no jack-in-a-box.
+
+| Property | Value |
+|----------|-------|
+| VM | Debian 12, 4 GB RAM, KVM enabled |
+| hermes-agent | git clone (itsXactlY fork) |
+| neural-memory | git clone + FastEmbed ONNX |
+| Embedding | intfloat/multilingual-e5-large (1024d) |
+| C++ bridge | Not built (Python fallback) |
+
+**All 12 integration tests passed:**
 
 | # | Test | Result |
 |---|------|--------|
@@ -234,43 +279,16 @@ C++ bridge:   Not built (Python fallback)
 | 11 | prefetch() | PASS |
 | 12 | shutdown() | PASS |
 
-**Findings:**
-- **4GB RAM minimum** for FastEmbed model download (~500MB). 2GB = OOM killed.
+### VM / Constrained Environment Notes
+
+- **4 GB RAM minimum** — FastEmbed model download (~500 MB). 2 GB = OOM killed.
 - **HashBackend** works as fallback on low-RAM systems (1024d, instant, no deps).
-- **C++ bridge optional** — Python fallback is fully functional.
-- **FastEmbed >= 0.5.1** recommended — earlier versions use CLS embedding by default.
+- **C++ bridge optional** — Python fallback covers all functionality.
+- **FastEmbed >= 0.5.1** — earlier versions default to CLS embedding (deprecated).
 - **`python3-venv` required** on Debian — `apt install python3.11-venv` if missing.
-- **`pip install --break-system-packages`** needed if no venv (PEP 668).
-- Tool discovery shows 58 tools (missing `firecrawl`/`fal_client` optional deps).
-- prefetch() returns empty on fresh DB (expected — no prior memories to pre-load).
-
-## Testing
-
-```bash
-# Quick smoke test
-cd ~/projects/neural-memory-adapter/python
-python3 demo.py
-
-# From plugin dir
-cd ~/.hermes/hermes-agent/plugins/memory/neural
-python3 test_suite.py
-
-# Upside-Down Test Suite (edge cases, corruption, concurrency, SQL injection)
-cd ~/projects/neural-memory-adapter
-python3 tests/test_upside_down.py
-
-# Clean VM test (hermes-agent + neural memory only)
-cd ~/projects/neural-memory-adapter
-python3 -c "
-import sys; sys.path.insert(0, 'python')
-from neural_memory import NeuralMemory
-nm = NeuralMemory(db_path='/tmp/test.db', embedding_backend='cpu', use_cpp=False)
-mid = nm.remember('test memory', label='smoke')
-results = nm.recall('test')
-assert len(results) > 0, 'recall failed'
-print(f'SMOKE TEST PASS: {len(results)} results')
-"
-```
+- **PEP 668 (Debian)** — `pip install` needs venv or `--break-system-packages`.
+- **Cloud-init delay** — 60–90 s on first boot. Don't assume SSH is ready immediately.
+- **prefetch() returns empty** on fresh DB — expected, no prior memories to pre-load.
 
 ## File Structure
 
@@ -298,28 +316,22 @@ neural-memory-adapter/
 └── README.md
 ```
 
-## Lessons Learned (Production)
+## Production Lessons
 
 ### Embedding & Runtime
-- **FastEmbed > sentence-transformers** — ONNX, no PyTorch conflict, fast on CPU
-- **FastEmbed >= 0.5.1** — earlier versions default to CLS embedding (deprecated). Set `add_custom_model` or pin version.
-- **GPU recall > C++ Bridge** — C++ Hopfield was biased, GPU matmul is clean
-- **Raw embeddings + GPU matmul** — best recall performance
-- **Don't force PyTorch** — let FastEmbed handle CPU, torch only for GPU recall
-- **numpy must be installed BEFORE FastEmbed** — FastEmbed depends on numpy at import time
+
+- **FastEmbed > sentence-transformers** — ONNX runtime, no PyTorch conflict, fast on CPU.
+- **FastEmbed >= 0.5.1** — earlier versions default to CLS embedding. Pin version or set `add_custom_model`.
+- **GPU recall > C++ Bridge** — C++ Hopfield had bias issues; GPU matmul is clean.
+- **numpy before FastEmbed** — FastEmbed imports numpy at load time; install order matters.
+- **Don't force PyTorch** — let FastEmbed handle CPU. torch only needed for GPU recall.
 
 ### Storage & Architecture
-- **SQLite = Source of Truth** — MSSQL optional, SQLite always works
-- **Auto-detect everything** — CUDA, backends, venv paths
 
-### Clean VM (2026-04-21)
-- **4GB RAM minimum** for FastEmbed model download (~500MB). 2GB = OOM killed during model fetch.
-- **HashBackend** is a valid fallback for constrained environments — 1024d, instant, zero deps.
-- **C++ bridge is optional** — Python fallback covers all functionality. Only needed for perf.
-- **python3-venv required** on Debian 12 — `apt install python3.11-venv` if cloud-init missed it.
-- **Debian PEP 668** — `pip install` fails without venv or `--break-system-packages`.
-- **Cloud-init takes 60-90s** — packages install on first boot. Don't assume SSH is ready.
-- **`neural_remember` / `neural_recall` / `neural_think` / `neural_graph`** are the 4 tool schemas exposed by NeuralMemoryProvider. `neural_dream` and `neural_dream_stats` are in the standalone Memory class only.
-- **prefetch() returns empty** on fresh DB — expected behavior, no prior memories to pre-load.
-- **MemoryProvider interface** requires `initialize(session_id)` — not just `initialize()`.
-- **hermes-agent tools** show 58 registered (missing `firecrawl`/`fal_client` optional deps).
+- **SQLite = Source of Truth** — MSSQL is optional. SQLite always works.
+- **Auto-detect everything** — CUDA, backends, venv paths. Minimize config burden.
+- **4 tool schemas** exposed by NeuralMemoryProvider: `neural_remember`, `neural_recall`, `neural_think`, `neural_graph`. (`neural_dream` / `neural_dream_stats` are standalone Memory class only.)
+
+## License
+
+See [LICENSE](LICENSE).
