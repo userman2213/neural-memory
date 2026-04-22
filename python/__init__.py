@@ -137,6 +137,7 @@ class NeuralMemoryProvider(MemoryProvider):
         self._consolidation_stop = threading.Event()  # set = stop requested
         self._turn_count = 0
         self._dream = None  # DreamEngine instance
+        self._dream_was_running_before_turn = False  # track if dreaming when turn started
         # Sponge mode: immediate background absorption
         self._sponge_queue: Optional[queue.Queue] = None
         self._sponge_worker: Optional[threading.Thread] = None
@@ -612,6 +613,50 @@ class NeuralMemoryProvider(MemoryProvider):
         """
         self._turn_count += 1
 
+    def post_llm_call(self, session_id: str, user_message: str, assistant_response: str,
+                      conversation_history: list, model: str, platform: str, **kwargs) -> None:
+        """Resume dream engine after a turn completes if still idle.
+        
+        After each turn, if Hermes is going back to idle, restart the dream engine
+        so background consolidation continues without explicit user trigger.
+        Only resumes if the dream engine was active before this turn started.
+        """
+        if self._dream is None:
+            return
+        
+        if self._dream_was_running_before_turn:
+            # Restart the dream engine for idle-time consolidation
+            self._dream.start()
+            self._dream_was_running_before_turn = False
+
+    def _on_pre_llm_call(self, session_id: str, user_message: str, **kwargs) -> None:
+        """Internal: activity signal from pre_llm_call hook.
+        
+        Registered as a plugin hook (pre_llm_call) to get notified on every turn.
+        This is the PRIMARY activity signal — fires once per turn, before any tool
+        calls or LLM processing.
+        
+        Pause/resume pattern:
+        - pre_llm_call: record if dreaming, then pause, touch idle timer
+        - post_llm_call: resume if it was running and still idle
+        """
+        if self._dream is None:
+            return
+        
+        # Record whether the dream engine was running when this turn started
+        self._dream_was_running_before_turn = (
+            hasattr(self._dream, '_thread') 
+            and self._dream._thread is not None 
+            and self._dream._thread.is_alive()
+        )
+        
+        # Stop the dream engine for the duration of this turn
+        if self._dream_was_running_before_turn:
+            self._dream.stop()
+        
+        # Always reset the idle timer on activity
+        self._dream.touch()
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return ALL_TOOL_SCHEMAS
 
@@ -818,4 +863,8 @@ def register(ctx) -> None:
     provider = NeuralMemoryProvider()
     ctx.register_memory_provider(provider)
     
-    
+    # Activity-aware dream engine: pause while Hermes is active, resume when idle.
+    # _on_pre_llm_call: stops dreaming, records state, resets idle timer
+    # post_llm_call: resumes if it was running before the turn started
+    ctx.register_hook("pre_llm_call", provider._on_pre_llm_call)
+    ctx.register_hook("post_llm_call", provider.post_llm_call)
